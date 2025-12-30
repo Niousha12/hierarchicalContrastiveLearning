@@ -1,0 +1,19 @@
+{
+  "Dresses": 0,
+  "Blouses_Shirts": 1,
+  "Denim": 2,
+  "Cardigans": 3,
+  "Jackets_Vests": 4,
+  "Pants": 5,
+  "Leggings": 6,
+  "Graphic_Tees": 7,
+  "Jackets_Coats": 8,
+  "Sweaters": 9,
+  "Sweatshirts_Hoodies": 10,
+  "Shorts": 11,
+  "Rompers_Jumpsuits": 12,
+  "Suiting": 13,
+  "Shirts_Polos": 14,
+  "Skirts": 15,
+  "Tees_Tanks": 16
+}

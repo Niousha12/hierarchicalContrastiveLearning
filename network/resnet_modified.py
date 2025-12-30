@@ -8,7 +8,7 @@ Modified by shu.zhang@salesforce.com
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision.models.utils import load_state_dict_from_url
+from torch.hub import load_state_dict_from_url
 from typing import Type, Any, Callable, Union, List, Optional
 from torch import Tensor
 

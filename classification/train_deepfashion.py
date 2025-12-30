@@ -16,7 +16,7 @@ from util.util import adjust_learning_rate, warmup_learning_rate, TwoCropTransfo
 from losses.losses import HMLC
 from network import resnet_modified
 from network.resnet_modified import LinearClassifier
-import tensorboard_logger as tb_logger
+# import tensorboard_logger as tb_logger
 import torch
 import torch.nn as nn
 import torch.nn.parallel
@@ -66,7 +66,7 @@ def parse_option():
                         help='number of total epochs to run')
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='manual epoch number (useful on restarts)')
-    parser.add_argument('-b', '--batch-size', default=512, type=int,
+    parser.add_argument('-b', '--batch-size', default=128, type=int,
                         metavar='N', help='mini-batch size (default: 512)')
     parser.add_argument('--print-freq', '-p', default=10, type=int,
                         metavar='N', help='print frequency (default: 10)')
@@ -106,7 +106,7 @@ def parse_option():
                         help='distributed backend')
     parser.add_argument('--seed', default=None, type=int,
                         help='seed for initializing training. ')
-    parser.add_argument('--gpu', default=None, type=int,
+    parser.add_argument('--gpu', default=0, type=int,
                         help='GPU id to use.')
     parser.add_argument('--multiprocessing-distributed', action='store_true',
                         help='Use multi-processing distributed training to launch '
@@ -182,7 +182,7 @@ def main():
 def main_worker(gpu, ngpus_per_node, args):
     print("GPU in main worker is {}".format(gpu))
     args.gpu = gpu
-    logger = tb_logger.Logger(logdir=args.tb_folder, flush_secs=2)
+    # logger = tb_logger.Logger(logdir=args.tb_folder, flush_secs=2)
 
     # suppress printing if not master
     if args.multiprocessing_distributed and args.gpu != 0:
@@ -227,7 +227,7 @@ def main_worker(gpu, ngpus_per_node, args):
         adjust_learning_rate(args, optimizer, epoch)
 
         # train for one epoch
-        train(dataloaders_dict, model, criterion, optimizer, epoch, args, logger)
+        train(dataloaders_dict, model, criterion, optimizer, epoch, args)
         output_file = args.save_folder + '/checkpoint_{:04d}.pth.tar'.format(epoch)
 
         if not args.multiprocessing_distributed or (
@@ -245,18 +245,22 @@ def set_model(ngpus_per_node, args):
     criterion = HMLC(temperature=args.temp, loss_type=args.loss, layer_penalty=torch.exp)
 
     # This part is to load a pretrained model
-    ckpt = torch.load(args.ckpt, map_location='cpu')
+    state_dict = torch.load("../pretrained_model/resnet50-19c8e357.pth", map_location='cpu', weights_only=False)
     # state_dict = ckpt['state_dict']
-    state_dict = ckpt['model']
+    # state_dict = ckpt['model']
     model_dict = model.state_dict()
     new_state_dict = {}
     # for k, v in state_dict.items():
     #     if not k.startswith('module.encoder_q.fc'):
     #         k = k.replace('module.encoder_q', 'encoder')
     #         new_state_dict[k] = v
+    exception_list = ["fc.weight", "fc.bias"]
     for k, v in state_dict.items():
         if not k.startswith('module.head'):
-            k = k.replace('module.encoder', 'encoder')
+            # k = k.replace('module.encoder', 'encoder')
+            if k in exception_list:
+                continue
+            k = 'encoder.' + k
             new_state_dict[k] = v
     state_dict = new_state_dict
     model_dict.update(state_dict)
@@ -290,7 +294,7 @@ def set_model(ngpus_per_node, args):
         torch.cuda.set_device(args.gpu)
         model = model.cuda(args.gpu)
         # comment out the following line for debugging
-        raise NotImplementedError("Only DistributedDataParallel is supported.")
+        # raise NotImplementedError("Only DistributedDataParallel is supported.")
     else:
         # AllGather implementation (batch shuffle, queue update, etc.) in
         # this code only supports DistributedDataParallel.
@@ -300,10 +304,12 @@ def set_model(ngpus_per_node, args):
 
     return model, criterion
 
-def train(dataloaders, model, criterion, optimizer, epoch, args, logger):
+def train(dataloaders, model, criterion, optimizer, epoch, args):
     """
     one epoch training
     """
+
+    log_path = "train_stats.log"
 
     classifier = args.classifier
     model.train()
@@ -358,8 +364,11 @@ def train(dataloaders, model, criterion, optimizer, epoch, args, logger):
             end = time.time()
             sys.stdout.flush()
             if idx % args.print_freq == 0:
-                progress.display(idx)
-        logger.log_value('loss', losses.avg, epoch)
+                log_line = progress.display(idx)
+
+                with open(log_path, "a") as f:
+                    f.write(log_line + "\n")  # save identical text into log
+        # logger.log_value('loss', losses.avg, epoch)
 
 
 def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
@@ -435,7 +444,7 @@ def load_deep_fashion_hierarchical(root_dir, train_list_file, val_list_file, cla
                                                     os.path.join(root_dir, class_map_file),
                                                     os.path.join(root_dir, repeating_product_file),
                                                     transform=TwoCropTransform(train_transform))
-    
+
     val_dataset = DeepFashionHierarchihcalDataset(os.path.join(root_dir, val_list_file),
                                                   os.path.join(
                                                       root_dir, class_map_file),
@@ -493,7 +502,7 @@ def set_parameter_requires_grad(model, feature_extracting):
         # Select which params to finetune
         # for param in model.parameters():
         #     param.requires_grad = True
-        for name, param in model.module.named_parameters():
+        for name, param in model.named_parameters():
             if name.startswith('encoder.layer4'):
                 param.requires_grad = True
             elif name.startswith('encoder.layer3'):
@@ -536,7 +545,10 @@ class ProgressMeter(object):
     def display(self, batch):
         entries = [self.prefix + self.batch_fmtstr.format(batch)]
         entries += [str(meter) for meter in self.meters]
-        print('\t'.join(entries))
+        log_line = '\t'.join(entries)  # exact console format
+
+        print(log_line)  # still print to terminal
+        return log_line  # return to caller for logging
 
     def _get_batch_fmtstr(self, num_batches):
         num_digits = len(str(num_batches // 1))

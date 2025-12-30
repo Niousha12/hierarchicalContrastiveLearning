@@ -24,7 +24,7 @@ from network import resnet_modified
 import time
 import sys
 import shutil
-import tensorboard_logger as tb_logger
+# import tensorboard_logger as tb_logger
 
 def parse_option():
     parser = argparse.ArgumentParser('argument for training')
@@ -63,7 +63,7 @@ def parse_option():
                         help='the pth file to load')
     parser.add_argument('--gpu', default=0, type=int,
                         help='GPU id to use.')
-    parser.add_argument('-b', '--batch-size', default=256, type=int,
+    parser.add_argument('-b', '--batch-size', default=128, type=int,
                         metavar='N', help='mini-batch size (default: 256)')
     parser.add_argument('--print-freq', '-p', default=10, type=int,
                         metavar='N', help='print frequency (default: 10)')
@@ -90,7 +90,7 @@ def parse_option():
                         help='warm-up for large batch training')
     parser.add_argument('--tag', type=str, default='',
                         help='tag for model name')
-                        
+
     args = parser.parse_args()
     iterations = args.lr_decay_epochs.split(',')
     args.lr_decay_epochs = list([])
@@ -132,7 +132,7 @@ def main():
     args.save_folder = os.path.join(args.save_folder, args.model_name)
     if not os.path.isdir(args.save_folder):
         os.makedirs(args.save_folder)
-    logger = tb_logger.Logger(logdir=args.tb_folder, flush_secs=2)
+    # logger = tb_logger.Logger(logdir=args.tb_folder, flush_secs=2)
 
     # build model and criterion
     model, classifier, criterion = set_model(args)
@@ -140,7 +140,7 @@ def main():
     dataloaders_dict,_ = load_deep_fashion_hierarchical(args.data, args.train_listfile,
                                                                args.val_listfile, args.test_listfile, args.class_map_file, args.repeating_product_file,
                                                                args.input_size, args.batch_size, args.crop_size)
-    
+
     train_loader = dataloaders_dict['train']
     val_loader = dataloaders_dict['val']
     test_loader = dataloaders_dict['test']
@@ -155,14 +155,14 @@ def main():
         loss, acc_top1, acc_top5 = train(train_loader, model, classifier, criterion,
                           optimizer, epoch, args)
         time2 = time.time()
-        logger.log_value('loss', loss, epoch)
+        # logger.log_value('loss', loss, epoch)
         print('Train epoch {}, total time {:.3f}, accuracy_top1:{:.3f}, accuracy_top5:{:.3f}'.format(
             epoch, time2 - time1, acc_top1, acc_top5))
 
         # eval for one epoch
         loss, val_acc_top1, val_acc_top5 = validate(val_loader, model, classifier, criterion, args)
-        logger.log_value('val_loss', loss, epoch)
-        logger.log_value('val_top1', val_acc_top1, epoch)
+        # logger.log_value('val_loss', loss, epoch)
+        # logger.log_value('val_top1', val_acc_top1, epoch)
         if val_acc_top1 > best_acc:
             loss_test, test_acc_top1, test_acc_top5 = test(test_loader, model, classifier, criterion, args)
             best_acc = val_acc_top1
@@ -184,18 +184,26 @@ def set_model(args):
     criterion = torch.nn.CrossEntropyLoss()
 
     classifier = LinearClassifier(name='resnet50', num_classes=args.num_classes)
-    ckpt = torch.load(args.ckpt, map_location='cpu')
+    ckpt = torch.load("model/hmlc_dataset_resnet50_lr_0.5_decay_0.1_bsz_128_loss_hmce_trial_5/checkpoint_0100.pth.tar", map_location='cpu')
     state_dict = ckpt['state_dict']
 
     if torch.cuda.is_available():
-        if torch.cuda.device_count() > 1:
-            new_state_dict = {}
-            for k, v in state_dict.items():
-                k = k.replace("module.encoder", "encoder.module")
-                if k.startswith("module.head"):
-                    k = k.replace("module.head", "head")
-                new_state_dict[k] = v
-            state_dict = new_state_dict
+        # if torch.cuda.device_count() > 1:
+        #     new_state_dict = {}
+        #     for k, v in state_dict.items():
+        #         k = k.replace("module.encoder", "encoder.module")
+        #         if k.startswith("module.head"):
+        #             k = k.replace("module.head", "head")
+        #         new_state_dict[k] = v
+        #     state_dict = new_state_dict
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            k = k.replace("encoder", "encoder.module")
+            # if k.startswith("module.head"):
+            #     k = k.replace("module.head", "head")
+            new_state_dict[k] = v
+        state_dict = new_state_dict
+
         model = model.cuda()
         model.encoder = torch.nn.DataParallel(model.encoder)
         classifier = classifier.cuda()
@@ -207,6 +215,9 @@ def set_model(args):
 
 def train(train_loader, model, classifier, criterion, optimizer, epoch, args):
     """one epoch training"""
+
+    log_path = "eval_stats.log"
+
     model.eval()
     classifier.train()
 

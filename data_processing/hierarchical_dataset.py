@@ -76,7 +76,7 @@ class DeepFashionHierarchihcalDataset(Dataset):
     def __getitem__(self, index):
         images0, images1, labels = [], [], []
         for i in index:
-            image = Image.open(self.filenames[i])
+            image = Image.open("../" + self.filenames[i])
             label = list(self.get_label_split_by_index(i))
             if self.transform:
                 image0, image1 = self.transform(image)
@@ -155,7 +155,7 @@ class DeepFashionHierarchihcalDatasetEval(Dataset):
         return category, product, variation, image
 
     def __getitem__(self, index):
-        image = Image.open(self.filenames[index])
+        image = Image.open("../" + self.filenames[index])
         label = list(self.get_label_split_by_index(index))
         if self.transform:
             image = self.transform(image)
@@ -192,13 +192,13 @@ class HierarchicalBatchSampler(Sampler):
         self.dataset = dataset
         self.epoch=0
         if num_replicas is None:
-            if not dist.is_available():
-                raise RuntimeError("Requires distributed package to be available")
-            num_replicas = dist.get_world_size()
+            # if not dist.is_available():
+            #     raise RuntimeError("Requires distributed package to be available")
+            num_replicas = 1 #dist.get_world_size() #TODO
         if rank is None:
-            if not dist.is_available():
-                raise RuntimeError("Requires distributed package to be available")
-            rank = dist.get_rank()
+            # if not dist.is_available():
+            #     raise RuntimeError("Requires distributed package to be available")
+            rank = 0 #dist.get_rank() TODO
         self.num_replicas = num_replicas
         self.rank = rank
         self.drop_last = drop_last

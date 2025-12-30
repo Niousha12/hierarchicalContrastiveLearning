@@ -4,7 +4,6 @@ Use All The Labels: A Hierarchical Multi-Label Contrastive Learning Framework.
 
 ## Requirements
 * Pytorch 1.7.0
-* tensorboard_logger 0.1.0
 
 ## Typo
 * We want to correct a typo in the paper. 
@@ -17,11 +16,11 @@ In Eq. 6 and 7, <img src="https://render.githubusercontent.com/render/math?math=
 	```
 	{
 	  "images": [
-	    "/deep_fashion_in_store/img/WOMEN/Dresses/id_00000002/02_1_front.jpg",
-	    "/deep_fashion_in_store/img/WOMEN/Dresses/id_00000002/02_2_side.jpg",
-	    "/deep_fashion_in_store/img/WOMEN/Dresses/id_00000002/02_4_full.jpg",
-	    "/deep_fashion_in_store/img/WOMEN/Dresses/id_00000002/02_7_additional.jpg",
-	    "/deep_fashion_in_store/img/WOMEN/Blouses_Shirts/id_00000004/03_1_front.jpg"
+	    "/deep_fashion/img/WOMEN/Dresses/id_00000002/02_1_front.jpg",
+	    "/deep_fashion/img/WOMEN/Dresses/id_00000002/02_2_side.jpg",
+	    "/deep_fashion/img/WOMEN/Dresses/id_00000002/02_4_full.jpg",
+	    "/deep_fashion/img/WOMEN/Dresses/id_00000002/02_7_additional.jpg",
+	    "/deep_fashion/img/WOMEN/Blouses_Shirts/id_00000004/03_1_front.jpg"
 	  ],
 	  "categories": [
 	    "Dresses",
@@ -38,32 +37,39 @@ In Eq. 6 and 7, <img src="https://render.githubusercontent.com/render/math?math=
 	* Repeating product ids can be downloaded from [repeating_product_ids.csv](https://drive.google.com/file/d/1oFZfmZNTQNkPOiyIc_4b_g3qIXDvTmv4/view?usp=sharing)
 	* If experiment on the model transfer ability from seen classes to unseen classes, the two classes maps can be downloaded from [class_map_seen.json](https://drive.google.com/file/d/19q9NnnCieycgfsLI-iQCdTu82oDRZTAO/view?usp=sharing) and [class_map_unseen.json](https://drive.google.com/file/d/15PEcgP15PC-1m6DAmEwiFnTDzGovzoRD/view?usp=sharing).
 
-	* To train the model on Deep Fashion In-store dataset, run
+	* To train the model on Deep Fashion In-store dataset
+      1. First download the dataset from [DeepFashion](https://drive.google.com/drive/folders/0B7EVK8r0v71pVDZFQXRsMDZCX1E?resourcekey=0-4R4v6zl4CWhHTsUGOsTstw&usp=drive_link) and unzip the img folder to ../deepfashion/
+      2. Then run
 
 	```
-	python train_deepfashion.py --data ./deepfashion/ 
-	--train-listfile ./train_listfile.json 
-	--val-listfile ./val_listfile.json 
-	--test-listfile ./test_listfile.json 
-	--class-map-file ./classmap.json 
-	--num-classes 17 
-	--learning_rate 0.5 --temp 0.1
-	--ckpt /pretrained_model/
-	--dist-url 'tcp://localhost:10001' 
-	--multiprocessing-distributed 
-	--world-size 1 --rank 0 --cosine
-
+	python train_deepfashion.py 
+    --data ../deepfashion/
+    --train-listfile train_listfile.json 
+    --val-listfile val_listfile.json
+    --class-map-file class_map.json
+    --repeating-product-file repeating_product_ids.csv
+    --num-classes 17
+    --learning_rate 0.5
+    --temp 0.1
+    --ckpt ../pretrained_model/
+    --dist-url 'tcp://localhost:10001'
+    --world-size 1
+    --rank 0
+    --cosine
 	```
 
 	* To evaluate the model, run
 	```
-	python eval_deepfashion.py --data ./deepfashion/ 
-	--train-listfile ./train_listfile.json --val-listfile ./val_listfile.json 
-	--class-map-file ./classmap.json 
-	--num-classes 17 
-	--learning_rate 0.5 --temp 0.1
-	--ckpt /trained_model/
-
+	python eval_deepfashion.py 
+    --data ../deepfashion/
+    --train-listfile train_listfile.json
+    --val-listfile val_listfile.json
+    --test-listfile test_listfile.json
+    --class-map-file class_map.json
+    --repeating-product-file repeating_product_ids.csv
+    --num-classes 17
+    --learning_rate 0.5
+    --ckpt ../trained_model/
 	```
 
 ## Reference
