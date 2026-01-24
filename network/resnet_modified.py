@@ -12,9 +12,7 @@ from torch.hub import load_state_dict_from_url
 from typing import Type, Any, Callable, Union, List, Optional
 from torch import Tensor
 
-
 __all__ = ['ResNet', 'resnet50']
-
 
 model_urls = {
     'resnet50': 'https://download.pytorch.org/models/resnet50-19c8e357.pth',
@@ -36,15 +34,15 @@ class BasicBlock(nn.Module):
     expansion: int = 1
 
     def __init__(
-        self,
-        inplanes: int,
-        planes: int,
-        stride: int = 1,
-        downsample: Optional[nn.Module] = None,
-        groups: int = 1,
-        base_width: int = 64,
-        dilation: int = 1,
-        norm_layer: Optional[Callable[..., nn.Module]] = None
+            self,
+            inplanes: int,
+            planes: int,
+            stride: int = 1,
+            downsample: Optional[nn.Module] = None,
+            groups: int = 1,
+            base_width: int = 64,
+            dilation: int = 1,
+            norm_layer: Optional[Callable[..., nn.Module]] = None
     ) -> None:
         super(BasicBlock, self).__init__()
         if norm_layer is None:
@@ -91,15 +89,15 @@ class Bottleneck(nn.Module):
     expansion: int = 4
 
     def __init__(
-        self,
-        inplanes: int,
-        planes: int,
-        stride: int = 1,
-        downsample: Optional[nn.Module] = None,
-        groups: int = 1,
-        base_width: int = 64,
-        dilation: int = 1,
-        norm_layer: Optional[Callable[..., nn.Module]] = None
+            self,
+            inplanes: int,
+            planes: int,
+            stride: int = 1,
+            downsample: Optional[nn.Module] = None,
+            groups: int = 1,
+            base_width: int = 64,
+            dilation: int = 1,
+            norm_layer: Optional[Callable[..., nn.Module]] = None
     ) -> None:
         super(Bottleneck, self).__init__()
         if norm_layer is None:
@@ -142,15 +140,15 @@ class Bottleneck(nn.Module):
 class ResNet(nn.Module):
 
     def __init__(
-        self,
-        block: Type[Union[BasicBlock, Bottleneck]],
-        layers: List[int],
-        num_classes: int = 1000,
-        zero_init_residual: bool = False,
-        groups: int = 1,
-        width_per_group: int = 64,
-        replace_stride_with_dilation: Optional[List[bool]] = None,
-        norm_layer: Optional[Callable[..., nn.Module]] = None
+            self,
+            block: Type[Union[BasicBlock, Bottleneck]],
+            layers: List[int],
+            num_classes: int = 1000,
+            zero_init_residual: bool = False,
+            groups: int = 1,
+            width_per_group: int = 64,
+            replace_stride_with_dilation: Optional[List[bool]] = None,
+            norm_layer: Optional[Callable[..., nn.Module]] = None
     ) -> None:
         super(ResNet, self).__init__()
         if norm_layer is None:
@@ -246,12 +244,12 @@ class ResNet(nn.Module):
 
 
 def _resnet(
-    arch: str,
-    block: Type[Union[BasicBlock, Bottleneck]],
-    layers: List[int],
-    pretrained: bool,
-    progress: bool,
-    **kwargs: Any
+        arch: str,
+        block: Type[Union[BasicBlock, Bottleneck]],
+        layers: List[int],
+        pretrained: bool,
+        progress: bool,
+        **kwargs: Any
 ) -> ResNet:
     model = ResNet(block, layers, **kwargs)
     if pretrained:
@@ -259,7 +257,6 @@ def _resnet(
                                               progress=progress)
         model.load_state_dict(state_dict)
     return model
-
 
 
 def resnet50(pretrained: bool = False, progress: bool = True, **kwargs: Any) -> ResNet:
@@ -272,6 +269,7 @@ def resnet50(pretrained: bool = False, progress: bool = True, **kwargs: Any) -> 
     return _resnet('resnet50', Bottleneck, [3, 4, 6, 3], pretrained, progress,
                    **kwargs)
 
+
 model_dict = {
     'resnet50': [resnet50, 2048],
 }
@@ -279,6 +277,7 @@ model_dict = {
 
 class MyResNet(nn.Module):
     """backbone + projection head"""
+
     def __init__(self, name='resnet50', head='mlp', feat_dim=128):
         super(MyResNet, self).__init__()
         model_fun, dim_in = model_dict[name]
@@ -303,6 +302,7 @@ class MyResNet(nn.Module):
 
 class LinearClassifier(nn.Module):
     """Linear classifier"""
+
     def __init__(self, name='resnet50', num_classes=10):
         super(LinearClassifier, self).__init__()
         _, feat_dim = model_dict[name]

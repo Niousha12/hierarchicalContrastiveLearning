@@ -1,12 +1,7 @@
 import os
 import json
 
-# === 1. Paths: EDIT THESE ===
-# Root folder where the In-shop benchmark is unpacked.
-# Inside this, you should have something like:
-#   Img/  (or img/)
-#   Eval/list_eval_partition.txt
-DATA_ROOT = "."   # <- change to your actual path
+DATA_ROOT = "."
 LIST_EVAL_PATH = os.path.join(DATA_ROOT, "list_eval_partition.txt")
 
 # Where to save the output JSON files
@@ -34,20 +29,17 @@ def main():
     data_lines = [l.strip() for l in lines[2:] if l.strip()]
 
     train_imgs, train_cats = [], []
-    val_imgs,   val_cats   = [], []   # gallery → val
-    test_imgs,  test_cats  = [], []   # query  → test
+    val_imgs, val_cats = [], []  # gallery → val
+    test_imgs, test_cats = [], []  # query  → test
 
     for line in data_lines:
         # image_name  item_id  eval_status
-        # e.g.:
-        # img/WOMEN/Dresses/id_00000002/02_1_front.jpg 00000002 train
+        # e.g.: img/WOMEN/Dresses/id_00000002/02_1_front.jpg 00000002 train
         parts = line.split()
         if len(parts) != 3:
             raise ValueError(f"Unexpected line format: {line}")
         img_rel, item_id, status = parts
 
-        # Keep paths relative to DATA_ROOT so the training script
-        # will do: os.path.join(args.data, image_path)
         image_path = 'deepfashion/' + img_rel  # e.g. "img/WOMEN/Dresses/..."
 
         category = get_category_from_path(img_rel)
@@ -56,7 +48,7 @@ def main():
             train_imgs.append(image_path)
             train_cats.append(category)
         elif status == "gallery":
-            val_imgs.append(image_path)   # gallery → val
+            val_imgs.append(image_path)  # gallery → val
             val_cats.append(category)
         elif status == "query":
             test_imgs.append(image_path)  # query → test

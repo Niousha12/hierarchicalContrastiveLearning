@@ -89,7 +89,7 @@ class DeepFashionHierarchihcalDataset(Dataset):
     def random_sample(self, label, label_dict):
         curr_dict = label_dict
         top_level = True
-        #all sub trees end with an int index
+        # all sub trees end with an int index
         while type(curr_dict) is not int:
             if top_level:
                 random_label = label
@@ -141,6 +141,8 @@ class DeepFashionHierarchihcalDatasetEval(Dataset):
                 self.labels[category][product][variation][image] = i
                 self.category.append(category)
                 self.filenames.append(filename)
+        self.classes = self.class_map.keys()
+        self.targets = self.category.copy()
 
     def get_label_split(self, filename):
         split = filename.split('/')
@@ -165,7 +167,7 @@ class DeepFashionHierarchihcalDatasetEval(Dataset):
     def random_sample(self, label, label_dict):
         curr_dict = label_dict
         top_level = True
-        #all sub trees end with an int index
+        # all sub trees end with an int index
         while type(curr_dict) is not int:
             if top_level:
                 random_label = label
@@ -181,24 +183,25 @@ class DeepFashionHierarchihcalDatasetEval(Dataset):
     def __len__(self):
         return len(self.filenames)
 
+
 class HierarchicalBatchSampler(Sampler):
     def __init__(self, batch_size: int,
-        drop_last: bool, dataset: DeepFashionHierarchihcalDataset,
-        num_replicas: Optional[int] = None,
-        rank: Optional[int] = None) -> None:
+                 drop_last: bool, dataset: DeepFashionHierarchihcalDataset,
+                 num_replicas: Optional[int] = None,
+                 rank: Optional[int] = None) -> None:
 
         super().__init__(dataset)
         self.batch_size = batch_size
         self.dataset = dataset
-        self.epoch=0
+        self.epoch = 0
         if num_replicas is None:
             # if not dist.is_available():
             #     raise RuntimeError("Requires distributed package to be available")
-            num_replicas = 1 #dist.get_world_size() #TODO
+            num_replicas = 1  # dist.get_world_size() #TODO
         if rank is None:
             # if not dist.is_available():
             #     raise RuntimeError("Requires distributed package to be available")
-            rank = 0 #dist.get_rank() TODO
+            rank = 0  # dist.get_rank() TODO
         self.num_replicas = num_replicas
         self.rank = rank
         self.drop_last = drop_last
@@ -266,7 +269,7 @@ class HierarchicalBatchSampler(Sampler):
             variation_index = self.random_unvisited_sample(
                 variation, self.dataset.labels[category][product], visited, indices, remaining)
             product_index = self.random_unvisited_sample(
-                product, self.dataset.labels[category], visited, indices,  remaining)
+                product, self.dataset.labels[category], visited, indices, remaining)
             category_index = self.random_unvisited_sample(
                 category, self.dataset.labels, visited, indices, remaining)
             batch.extend([category_index, product_index,

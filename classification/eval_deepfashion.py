@@ -24,6 +24,8 @@ from network import resnet_modified
 import time
 import sys
 import shutil
+
+
 # import tensorboard_logger as tb_logger
 
 def parse_option():
@@ -57,7 +59,7 @@ def parse_option():
     parser.add_argument('--num-classes', type=int,
                         help='number of classes')
     parser.add_argument('--epochs', type=int, default=100,
-                            help='number of training epochs')
+                        help='number of training epochs')
 
     parser.add_argument('--ckpt', type=str,
                         help='the pth file to load')
@@ -112,7 +114,7 @@ def main():
     if not os.path.isdir(args.tb_folder):
         os.makedirs(args.tb_folder)
 
-    args.model_name = '{}_{}_{}_{}_lr_{}_decay_{}_bsz_{}_trial_{}'.\
+    args.model_name = '{}_{}_{}_{}_lr_{}_decay_{}_bsz_{}_trial_{}'. \
         format('hmlc', 'dataset', 'resnet50', os.path.split(args.ckpt)[1], args.learning_rate,
                args.lr_decay_rate, args.batch_size, 5)
     if args.tag:
@@ -125,7 +127,7 @@ def main():
         if args.cosine:
             eta_min = args.learning_rate * (args.lr_decay_rate ** 3)
             args.warmup_to = eta_min + (args.learning_rate - eta_min) * (
-                1 + math.cos(math.pi * args.warm_epochs / args.epochs)) / 2
+                    1 + math.cos(math.pi * args.warm_epochs / args.epochs)) / 2
         else:
             args.warmup_to = args.learning_rate
     args.tb_folder = os.path.join(args.tb_folder, args.model_name)
@@ -137,9 +139,10 @@ def main():
     # build model and criterion
     model, classifier, criterion = set_model(args)
     cudnn.benchmark = True
-    dataloaders_dict,_ = load_deep_fashion_hierarchical(args.data, args.train_listfile,
-                                                               args.val_listfile, args.test_listfile, args.class_map_file, args.repeating_product_file,
-                                                               args.input_size, args.batch_size, args.crop_size)
+    dataloaders_dict, _ = load_deep_fashion_hierarchical(args.data, args.train_listfile,
+                                                         args.val_listfile, args.test_listfile, args.class_map_file,
+                                                         args.repeating_product_file,
+                                                         args.input_size, args.batch_size, args.crop_size)
 
     train_loader = dataloaders_dict['train']
     val_loader = dataloaders_dict['val']
@@ -153,7 +156,7 @@ def main():
         # train for one epoch
         time1 = time.time()
         loss, acc_top1, acc_top5 = train(train_loader, model, classifier, criterion,
-                          optimizer, epoch, args)
+                                         optimizer, epoch, args)
         time2 = time.time()
         # logger.log_value('loss', loss, epoch)
         print('Train epoch {}, total time {:.3f}, accuracy_top1:{:.3f}, accuracy_top5:{:.3f}'.format(
@@ -179,12 +182,13 @@ def main():
     print('best accuracy: Val {:.3f}, Test {:.3f}'.format(best_acc, best_test_acc))
     return
 
+
 def set_model(args):
     model = resnet_modified.MyResNet(name='resnet50')
     criterion = torch.nn.CrossEntropyLoss()
 
     classifier = LinearClassifier(name='resnet50', num_classes=args.num_classes)
-    ckpt = torch.load("model/hmlc_dataset_resnet50_lr_0.5_decay_0.1_bsz_128_loss_hmce_trial_5/checkpoint_0100.pth.tar", map_location='cpu')
+    ckpt = torch.load("model/first_run/checkpoint_0100.pth.tar", map_location='cpu')
     state_dict = ckpt['state_dict']
 
     if torch.cuda.is_available():
@@ -212,6 +216,7 @@ def set_model(args):
         model.load_state_dict(state_dict)
 
     return model, classifier, criterion
+
 
 def train(train_loader, model, classifier, criterion, optimizer, epoch, args):
     """one epoch training"""
@@ -267,11 +272,12 @@ def train(train_loader, model, classifier, criterion, optimizer, epoch, args):
                   'loss {loss.val:.3f} ({loss.avg:.3f})\t'
                   'Acc@1 {top1.val:.3f} ({top1.avg:.3f})\t'
                   'Acc@5 {top5.val:.3f} ({top5.avg:.3f})'.format(
-                   epoch, idx + 1, len(train_loader), batch_time=batch_time,
-                   data_time=data_time, loss=losses, top1=top1, top5=top5))
+                epoch, idx + 1, len(train_loader), batch_time=batch_time,
+                data_time=data_time, loss=losses, top1=top1, top5=top5))
             sys.stdout.flush()
 
     return losses.avg, top1.avg, top5.avg
+
 
 def validate(val_loader, model, classifier, criterion, args):
     batch_time = AverageMeter('Time', ':6.3f')
@@ -324,6 +330,7 @@ def validate(val_loader, model, classifier, criterion, args):
 
     return losses.avg, top1.avg, top5.avg
 
+
 def test(test_loader, model, classifier, criterion, args):
     batch_time = AverageMeter('Time', ':6.3f')
     losses = AverageMeter('Loss', ':.4e')
@@ -375,6 +382,7 @@ def test(test_loader, model, classifier, criterion, args):
 
     return losses.avg, top1.avg, top5.avg
 
+
 def load_data(root_dir, train_listfile, val_listfile, test_listfile, class_map_file,
               class_seen_file, class_unseen_file,
               input_size, scale_size, crop_size, batch_size):
@@ -405,9 +413,9 @@ def load_data(root_dir, train_listfile, val_listfile, test_listfile, class_map_f
 
     # Create training and validation datasets
     train_dataset = DatasetCategory(root_dir, 'train', train_listfile,
-                                  val_listfile, test_listfile, class_map_file,
-                                  class_seen_file, class_unseen_file,
-                                  data_transforms['train'])
+                                    val_listfile, test_listfile, class_map_file,
+                                    class_seen_file, class_unseen_file,
+                                    data_transforms['train'])
     val_dataset = DatasetCategory(root_dir, 'val', train_listfile,
                                   val_listfile, test_listfile, class_map_file,
                                   class_seen_file, class_unseen_file,
@@ -431,7 +439,8 @@ def load_data(root_dir, train_listfile, val_listfile, test_listfile, class_map_f
     return dataloaders_dict, device
 
 
-def load_deep_fashion_hierarchical(root_dir, train_list_file, val_list_file, test_list_file, class_map_file, repeating_product_file, input_size, batch_size,crop_size):
+def load_deep_fashion_hierarchical(root_dir, train_list_file, val_list_file, test_list_file, class_map_file,
+                                   repeating_product_file, input_size, batch_size, crop_size):
     train_transform = transforms.Compose([
         transforms.Resize(input_size),
         transforms.CenterCrop(crop_size),
@@ -465,6 +474,7 @@ def load_deep_fashion_hierarchical(root_dir, train_list_file, val_list_file, tes
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     return dataloaders_dict, device
 
+
 def accuracy(output, target, topk=(1,)):
     """Computes the accuracy over the k top predictions for the specified values of k"""
     with torch.no_grad():
@@ -479,13 +489,16 @@ def accuracy(output, target, topk=(1,)):
             res.append(correct_k.mul_(100.0 / batch_size))
         return res
 
+
 def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
     torch.save(state, filename)
     if is_best:
         shutil.copyfile(filename, 'model_best.pth.tar')
 
+
 class AverageMeter(object):
     """Computes and stores the average and current value"""
+
     def __init__(self, name, fmt=':f'):
         self.name = name
         self.fmt = fmt
@@ -507,6 +520,7 @@ class AverageMeter(object):
         fmtstr = '{name} {val' + self.fmt + '} ({avg' + self.fmt + '})'
         return fmtstr.format(**self.__dict__)
 
+
 class ProgressMeter(object):
     def __init__(self, num_batches, meters, prefix=""):
         self.batch_fmtstr = self._get_batch_fmtstr(num_batches)
@@ -522,6 +536,7 @@ class ProgressMeter(object):
         num_digits = len(str(num_batches // 1))
         fmt = '{:' + str(num_digits) + 'd}'
         return '[' + fmt + '/' + fmt.format(num_batches) + ']'
+
 
 if __name__ == '__main__':
     main()
