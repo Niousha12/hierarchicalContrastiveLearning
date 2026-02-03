@@ -16,22 +16,47 @@ class TwoCropTransform:
         return [self.transform(x), self.transform(x)]
 
 
+class WarmupCosineSchedule(object):
+    def __init__(
+            self, optimizer, warmup_steps, lr_start, lr_ref, T_max, last_epoch=-1, lr_final=0.0, warmup_mode="linear"
+    ):
+        self.optimizer = optimizer
+        self.lr_start = lr_start
+        self.lr_ref = lr_ref
+        self.lr_final = lr_final
+        self.warmup_steps = warmup_steps
+        self.warmup_mode = warmup_mode
+        self.T_max = T_max
+        self._step = 0.0
+
+    def step(self):
+        self._step += 1
+        if self._step < self.warmup_steps:
+            progress = float(self._step) / float(max(1, self.warmup_steps))
+            if self.warmup_mode == "linear":
+                new_lr = self.lr_start + progress * (self.lr_ref - self.lr_start)
+            elif self.warmup_mode == "cosine":
+                new_lr = self.lr_start + (self.lr_ref - self.lr_start) * 0.5 * (1.0 - math.cos(math.pi * progress))
+            else:
+                raise ValueError(f"Unrecognized warmup shape: {self.warmup_mode}")
+        else:
+            # -- progress after warmup
+            progress = min(1.0, float(self._step - self.warmup_steps) / float(max(1, self.T_max - self.warmup_steps)))
+            new_lr = max(self.lr_final,
+                         self.lr_final + (self.lr_ref - self.lr_final) * 0.5 * (1.0 + math.cos(math.pi * progress)),
+                         )
+
+        for group in self.optimizer.param_groups:
+            group["lr"] = new_lr * group.get("lr_scale", 1.0)
+
+        return new_lr
+
+
 def adjust_learning_rate(args, optimizer, epoch):
     lr = args.learning_rate
-    T1 = 100
-    T2 = args.epochs - T1
     if args.cosine:
-        eta_mid = lr * (args.lr_decay_rate ** 3)
-        eta_min = lr * (args.lr_decay_rate ** 4)
-
-        # lr = eta_min + (lr - eta_min) * (1 + math.cos(math.pi * epoch / args.epochs)) / 2
-
-        if epoch <= T1:
-            lr = eta_mid + (lr - eta_mid) * (1 + math.cos(math.pi * epoch / T1)) / 2
-        else:
-            e2 = epoch - T1
-            lr = eta_min + (eta_mid - eta_min) * (1 + math.cos(math.pi * e2 / T2)) / 2
-
+        eta_min = lr * (args.lr_decay_rate ** 3)
+        lr = eta_min + (lr - eta_min) * (1 + math.cos(math.pi * epoch / args.epochs)) / 2
     else:
         steps = np.sum(epoch > np.asarray(args.lr_decay_epochs))
         if steps > 0:

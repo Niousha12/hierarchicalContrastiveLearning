@@ -17,7 +17,7 @@ from data_processing.generate_dataset import DatasetCategory
 from data_processing.hierarchical_dataset import DeepFashionHierarchihcalDataset, HierarchicalBatchSampler, \
     DeepFashionHierarchihcalDatasetEval
 from torch.optim import lr_scheduler
-from util.util import adjust_learning_rate, warmup_learning_rate, TwoCropTransform
+from util.util import adjust_learning_rate, warmup_learning_rate, TwoCropTransform, WarmupCosineSchedule
 from losses.losses import HMLC, HierarchicalSupervisedDCL
 from network import resnet_modified
 from network.resnet_modified import LinearClassifier
@@ -70,7 +70,7 @@ def parse_option():
                         help='crop size')
     parser.add_argument('--num-classes', type=int,
                         help='number of classes')
-    parser.add_argument('--epochs', default=200, type=int, metavar='N',
+    parser.add_argument('--epochs', default=100, type=int, metavar='N',
                         help='number of total epochs to run')
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='manual epoch number (useful on restarts)')
@@ -174,15 +174,20 @@ def main():
     model, criterion = set_model(device, args)
 
     set_parameter_requires_grad(model, args.feature_extract)
-    optimizer = setup_optimizer(model, args.learning_rate,
-                                args.momentum, args.weight_decay,
-                                args.feature_extract)
+    optimizer = setup_optimizer(model, args.learning_rate, args.momentum, args.weight_decay, args.feature_extract)
     cudnn.benchmark = True
 
     dataloaders_dict, sampler = load_deep_fashion_hierarchical(args.data, args.train_listfile,
                                                                args.val_listfile, args.test_listfile,
-                                                               args.class_map_file, args.repeating_product_file,
-                                                               args)
+                                                               args.class_map_file, args.repeating_product_file, args)
+
+    ##########
+    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=5e-4)
+    total_steps = args.epochs * len(dataloaders_dict['train'])
+    scheduler = WarmupCosineSchedule(optimizer, warmup_steps=int(0.1 * total_steps),  # 5% warmup is common
+                                     lr_start=0.0, lr_ref=args.learning_rate, T_max=total_steps, lr_final=0.0,
+                                     warmup_mode="linear", )
+    ##########
 
     results = {
         'test_acc@1': [],
@@ -191,10 +196,11 @@ def main():
     for epoch in range(1, args.epochs + 1):
         print('Epoch {}/{}'.format(epoch, args.epochs + 1))
         print('-' * 10)
-        adjust_learning_rate(args, optimizer, epoch)
+        # adjust_learning_rate(args, optimizer, epoch)
 
         # train for one epoch
-        train(dataloaders_dict, model, criterion, optimizer, epoch, args, device)
+        train(dataloaders_dict, model, criterion, optimizer, scheduler, epoch, args)
+        # scheduler.step()
 
         test_acc_1, test_acc_5 = test(model, dataloaders_dict['memory'], dataloaders_dict['test'], args, epoch=epoch,
                                       device='cuda')
@@ -205,8 +211,9 @@ def main():
         data_frame = pd.DataFrame(data=results, index=range(1, epoch + 1))
         data_frame.to_csv(f'statistics_1.csv', index_label='epoch')
 
-        output_file = args.save_folder + '/checkpoint_{:04d}.pth.tar'.format(epoch)
-
+        # To save checkpoint, uncomment the following lines
+        # output_file = args.save_folder + '/checkpoint_{:04d}.pth.tar'.format(epoch)
+        #
         # save_checkpoint({
         #     'epoch': epoch + 1,
         #     'arch': args.model,
@@ -243,7 +250,7 @@ def set_model(device, args):
     return model, criterion
 
 
-def train(dataloaders, model, criterion, optimizer, epoch, args, device):
+def train(dataloaders, model, criterion, optimizer, scheduler, epoch, args):
     """
     one epoch training
     """
@@ -267,10 +274,10 @@ def train(dataloaders, model, criterion, optimizer, epoch, args, device):
         data_time.update(time.time() - end)
         labels = labels.squeeze()
         images = torch.cat([images[0].squeeze(), images[1].squeeze()], dim=0)
-        images = images.to(device, non_blocking=True)
-        labels = labels.squeeze().to(device, non_blocking=True)
+        images = images.cuda(non_blocking=True)
+        labels = labels.squeeze().cuda(non_blocking=True)
         bsz = labels.shape[0]  # batch size
-        warmup_learning_rate(args, epoch, idx, len(dataloaders['train']), optimizer)
+        # warmup_learning_rate(args, epoch, idx, len(dataloaders['train']), optimizer)
 
         # forward
         # track history if only in train
@@ -284,6 +291,7 @@ def train(dataloaders, model, criterion, optimizer, epoch, args, device):
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+        scheduler.step()
 
         # measure elapsed time
         batch_time.update(time.time() - end)
@@ -444,7 +452,8 @@ def setup_optimizer(model_ft, lr, momentum, weight_decay, feature_extract):
                 print("\t", name)
 
     # Observe that all parameters are being optimized
-    optimizer_ft = torch.optim.SGD(params_to_update, lr=lr, momentum=momentum, weight_decay=weight_decay)
+    # optimizer_ft = torch.optim.SGD(params_to_update, lr=lr, momentum=momentum, weight_decay=weight_decay)
+    optimizer_ft = torch.optim.AdamW(params_to_update, lr=lr, weight_decay=weight_decay)
     return optimizer_ft
 
 
@@ -527,8 +536,8 @@ def test(net, memory_data_loader, test_data_loader, args, epoch, device):
         # loop test data to predict the label by weighted knn search
         test_bar = tqdm(test_data_loader)
         for data, target in test_bar:
-            data, target = data.to(device, non_blocking=True), target[0].to(device,
-                                                                            non_blocking=True)  # TODO: 0 is category
+            # TODO: category is 0
+            data, target = data.to(device, non_blocking=True), target[0].to(device, non_blocking=True)
             feature = net.encoder(data)
 
             total_num += data.size(0)
