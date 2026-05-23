@@ -35,6 +35,7 @@ import time
 import shutil
 import math
 import builtins
+import random
 
 
 def parse_option():
@@ -43,7 +44,7 @@ def parse_option():
                         help='path to dataset, the superset of train/val')
     parser.add_argument('--save_freq', type=int, default=20,
                         help='save frequency')
-    parser.add_argument('--model', type=str, default='resnet50')
+    parser.add_argument('--model', type=str, default='resnet50', choices=['resnet50', 'vit'])
     parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                         help='number of data loading workers (default: 4)')
     parser.add_argument('--train-listfile', default='', type=str,
@@ -181,12 +182,21 @@ def main():
                                                                args.val_listfile, args.test_listfile,
                                                                args.class_map_file, args.repeating_product_file, args)
 
+    # Sanity check: shuffle filenames and category together to break image-label
+    # correspondence while keeping label tuples internally consistent (same perm),
+    # avoiding KeyErrors in the hierarchical sampler.
+    train_dataset = dataloaders_dict['train'].dataset
+    perm = list(range(len(train_dataset.filenames)))
+    random.shuffle(perm)
+    train_dataset.filenames = [train_dataset.filenames[i] for i in perm]
+    train_dataset.category = [train_dataset.category[i] for i in perm]
+
     ##########
-    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=5e-4)
-    total_steps = args.epochs * len(dataloaders_dict['train'])
-    scheduler = WarmupCosineSchedule(optimizer, warmup_steps=int(0.1 * total_steps),  # 5% warmup is common
-                                     lr_start=0.0, lr_ref=args.learning_rate, T_max=total_steps, lr_final=0.0,
-                                     warmup_mode="linear", )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=5e-4)
+    # total_steps = args.epochs * len(dataloaders_dict['train'])
+    # scheduler = WarmupCosineSchedule(optimizer, warmup_steps=int(0.1 * total_steps),  # 5% warmup is common
+    #                                  lr_start=0.0, lr_ref=args.learning_rate, T_max=total_steps, lr_final=0.0,
+    #                                  warmup_mode="linear", )
     ##########
 
     results = {
@@ -209,7 +219,7 @@ def main():
 
         # save statistics
         data_frame = pd.DataFrame(data=results, index=range(1, epoch + 1))
-        data_frame.to_csv(f'statistics_1.csv', index_label='epoch')
+        data_frame.to_csv(f'{args.model_name}_statistics.csv', index_label='epoch')
 
         # To save checkpoint, uncomment the following lines
         # output_file = args.save_folder + '/checkpoint_{:04d}.pth.tar'.format(epoch)
@@ -224,25 +234,25 @@ def main():
 
 
 def set_model(device, args):
-    model = resnet_modified.MyResNet(name='resnet50')
-    # criterion = HMLC(temperature=args.temp, loss_type=args.loss, layer_penalty=torch.exp)
     criterion = HierarchicalSupervisedDCL(temperature=args.temp)
 
-    # This part is to load a pretrained model
-    state_dict = torch.load("../pretrained_model/resnet50-19c8e357.pth", map_location='cpu', weights_only=False)
-    model_dict = model.state_dict()
-    new_state_dict = {}
-    exception_list = ["fc.weight", "fc.bias"]
-    for k, v in state_dict.items():
-        if not k.startswith('module.head'):
-            # k = k.replace('module.encoder', 'encoder')
-            if k in exception_list:
-                continue
-            k = 'encoder.' + k
-            new_state_dict[k] = v
-    state_dict = new_state_dict
-    model_dict.update(state_dict)
-    model.load_state_dict(model_dict)
+    if args.model == 'vit':
+        model = resnet_modified.MyViT()
+    else:
+        model = resnet_modified.MyResNet(name='resnet50')
+        # Load pretrained ResNet50 weights
+        state_dict = torch.load("pretrained_model/resnet50-19c8e357.pth", map_location='cpu', weights_only=False)
+        model_dict = model.state_dict()
+        new_state_dict = {}
+        exception_list = ["fc.weight", "fc.bias"]
+        for k, v in state_dict.items():
+            if not k.startswith('module.head'):
+                if k in exception_list:
+                    continue
+                k = 'encoder.' + k
+                new_state_dict[k] = v
+        model_dict.update(new_state_dict)
+        model.load_state_dict(model_dict)
 
     model = model.to(device)
     criterion = criterion.to(device)
@@ -254,7 +264,7 @@ def train(dataloaders, model, criterion, optimizer, scheduler, epoch, args):
     """
     one epoch training
     """
-    log_path = "train_stats.log"
+    log_path = f"{args.model_name}_train_stats.log"
     model.train()
     batch_time = AverageMeter('Time', ':6.3f')
     data_time = AverageMeter('Data', ':6.3f')
@@ -452,8 +462,8 @@ def setup_optimizer(model_ft, lr, momentum, weight_decay, feature_extract):
                 print("\t", name)
 
     # Observe that all parameters are being optimized
-    # optimizer_ft = torch.optim.SGD(params_to_update, lr=lr, momentum=momentum, weight_decay=weight_decay)
-    optimizer_ft = torch.optim.AdamW(params_to_update, lr=lr, weight_decay=weight_decay)
+    optimizer_ft = torch.optim.SGD(params_to_update, lr=lr, momentum=momentum, weight_decay=weight_decay)
+    # optimizer_ft = torch.optim.AdamW(params_to_update, lr=lr, weight_decay=weight_decay)
     return optimizer_ft
 
 

@@ -76,7 +76,7 @@ class DeepFashionHierarchihcalDataset(Dataset):
     def __getitem__(self, index):
         images0, images1, labels = [], [], []
         for i in index:
-            image = Image.open("../" + self.filenames[i])
+            image = Image.open(self.filenames[i])
             label = list(self.get_label_split_by_index(i))
             if self.transform:
                 image0, image1 = self.transform(image)
@@ -95,9 +95,9 @@ class DeepFashionHierarchihcalDataset(Dataset):
                 random_label = label
                 if len(curr_dict.keys()) != 1:
                     while (random_label == label):
-                        random_label = random.sample(curr_dict.keys(), 1)[0]
+                        random_label = random.sample(list(curr_dict.keys()), 1)[0]
             else:
-                random_label = random.sample(curr_dict.keys(), 1)[0]
+                random_label = random.sample(list(curr_dict.keys()), 1)[0]
             curr_dict = curr_dict[random_label]
             top_level = False
         return curr_dict
@@ -157,7 +157,7 @@ class DeepFashionHierarchihcalDatasetEval(Dataset):
         return category, product, variation, image
 
     def __getitem__(self, index):
-        image = Image.open("../" + self.filenames[index])
+        image = Image.open(self.filenames[index])
         label = list(self.get_label_split_by_index(index))
         if self.transform:
             image = self.transform(image)

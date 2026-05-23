@@ -275,6 +275,43 @@ model_dict = {
 }
 
 
+class ViTEncoder(nn.Module):
+    """Wraps HuggingFace ViTModel so .encoder(x) returns a plain tensor (CLS token)."""
+
+    def __init__(self, vit_model):
+        super().__init__()
+        self.vit = vit_model
+
+    def forward(self, x):
+        return self.vit(pixel_values=x).last_hidden_state[:, 0]  # [B, hidden_size]
+
+
+class MyViT(nn.Module):
+    """ViT-B/16 backbone + projection head, same interface as MyResNet."""
+
+    def __init__(self, model_name='google/vit-base-patch16-224', head='mlp', feat_dim=128):
+        super(MyViT, self).__init__()
+        from transformers import ViTModel
+        vit = ViTModel.from_pretrained(model_name)
+        self.encoder = ViTEncoder(vit)
+        dim_in = vit.config.hidden_size  # 768 for ViT-B/16
+        if head == 'linear':
+            self.head = nn.Linear(dim_in, feat_dim)
+        elif head == 'mlp':
+            self.head = nn.Sequential(
+                nn.Linear(dim_in, dim_in),
+                nn.ReLU(inplace=True),
+                nn.Linear(dim_in, feat_dim)
+            )
+        else:
+            raise NotImplementedError('head not supported: {}'.format(head))
+
+    def forward(self, x):
+        feat = self.encoder(x)
+        feat = F.normalize(self.head(feat), dim=1)
+        return feat
+
+
 class MyResNet(nn.Module):
     """backbone + projection head"""
 
