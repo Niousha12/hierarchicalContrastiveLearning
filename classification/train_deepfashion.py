@@ -124,6 +124,8 @@ def parse_option():
                              'multi node data parallel training')
     parser.add_argument('--loss', type=str, default='hmce',
                         help='loss type', choices=['hmc', 'hce', 'hmce'])
+    parser.add_argument('--criterion', type=str, default='hmlc', choices=['hmlc', 'hsmc'],
+                        help='criterion: hmlc = HMLC, hsmc = HierarchicalSupervisedDCL')
     parser.add_argument('--tag', type=str, default='',
                         help='tag for model name')
     parser.add_argument('--k', default=200, type=int, help='Top k most similar images used to predict the label')
@@ -182,14 +184,14 @@ def main():
                                                                args.val_listfile, args.test_listfile,
                                                                args.class_map_file, args.repeating_product_file, args)
 
-    # Sanity check: shuffle filenames and category together to break image-label
-    # correspondence while keeping label tuples internally consistent (same perm),
-    # avoiding KeyErrors in the hierarchical sampler.
-    train_dataset = dataloaders_dict['train'].dataset
-    perm = list(range(len(train_dataset.filenames)))
-    random.shuffle(perm)
-    train_dataset.filenames = [train_dataset.filenames[i] for i in perm]
-    train_dataset.category = [train_dataset.category[i] for i in perm]
+    # # Sanity check: shuffle filenames and category together to break image-label
+    # # correspondence while keeping label tuples internally consistent (same perm),
+    # # avoiding KeyErrors in the hierarchical sampler.
+    # train_dataset = dataloaders_dict['train'].dataset
+    # perm = list(range(len(train_dataset.filenames)))
+    # random.shuffle(perm)
+    # train_dataset.filenames = [train_dataset.filenames[i] for i in perm]
+    # train_dataset.category = [train_dataset.category[i] for i in perm]
 
     ##########
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=5e-4)
@@ -234,10 +236,13 @@ def main():
 
 
 def set_model(device, args):
-    criterion = HierarchicalSupervisedDCL(temperature=args.temp)
+    if args.criterion == 'hsmc':
+        criterion = HierarchicalSupervisedDCL(temperature=args.temp)
+    else:
+        criterion = HMLC(temperature=args.temp, loss_type=args.loss, layer_penalty=torch.exp)
 
     if args.model == 'vit':
-        model = resnet_modified.MyViT()
+        model = resnet_modified.MyViT(local_dir='pretrained_model/vit-base-patch16-224')
     else:
         model = resnet_modified.MyResNet(name='resnet50')
         # Load pretrained ResNet50 weights
@@ -471,15 +476,28 @@ def set_parameter_requires_grad(model, feature_extracting):
     if hasattr(model, "module"):
         model = model.module
     if feature_extracting:
+        is_vit = isinstance(model, resnet_modified.MyViT)
         for name, param in model.named_parameters():
-            if name.startswith('encoder.layer4'):
-                param.requires_grad = True
-            elif name.startswith('encoder.layer3'):
-                param.requires_grad = True
-            elif name.startswith('head'):
-                param.requires_grad = True
+            if is_vit:
+                # Unfreeze last 3 transformer blocks (equiv. to layer3+layer4 in ResNet50),
+                # the final layernorm, and the projection head
+                if any(name.startswith(f'encoder.vit.encoder.layer.{i}') for i in [9, 10, 11]):
+                    param.requires_grad = True
+                elif name.startswith('encoder.vit.layernorm'):
+                    param.requires_grad = True
+                elif name.startswith('head'):
+                    param.requires_grad = True
+                else:
+                    param.requires_grad = False
             else:
-                param.requires_grad = False
+                if name.startswith('encoder.layer4'):
+                    param.requires_grad = True
+                elif name.startswith('encoder.layer3'):
+                    param.requires_grad = True
+                elif name.startswith('head'):
+                    param.requires_grad = True
+                else:
+                    param.requires_grad = False
 
 
 class AverageMeter(object):

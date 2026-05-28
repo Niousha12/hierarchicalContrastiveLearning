@@ -18,7 +18,7 @@ cd /lustre06/project/6045013/nsadjadi/hierarchicalContrastiveLearning
 export PYTHONPATH="$PWD:$PYTHONPATH"
 
 python classification/train_deepfashion.py \
-    --data ../deepfashion/ \
+    --data deepfashion/ \
     --train-listfile train_listfile.json \
     --val-listfile val_listfile.json \
     --test-listfile test_listfile.json \
@@ -27,7 +27,8 @@ python classification/train_deepfashion.py \
     --num-classes 17 \
     --learning_rate 0.05 \
     --temp 0.2 \
-    --ckpt ../pretrained_model/ \
+    --ckpt pretrained_model/ \
+    --criterion hsmc \
     --dist-url 'tcp://localhost:10001' \
     --world-size 1 \
     --rank 0 \
