@@ -157,14 +157,19 @@ best_prec1 = 0
 def main():
     global args, best_prec1
     args = parse_option()
+    if args.seed is not None:
+        random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)
 
     args.save_folder = './model'
     if not os.path.isdir(args.save_folder):
         os.makedirs(args.save_folder)
 
-    args.model_name = '{}_{}_{}_lr_{}_decay_{}_bsz_{}_loss_{}_trial_{}'. \
-        format('hmlc', 'dataset', args.model, args.learning_rate,
-               args.lr_decay_rate, args.batch_size, args.loss, 5)
+    pretrained_tag = 'pretrained' if args.pretrained else 'scratch'
+    args.model_name = '{}_{}_lr_{}_decay_{}_bsz_{}_loss_{}_{}trial_{}'. \
+        format(args.criterion, args.model, args.learning_rate,
+               args.lr_decay_rate, args.batch_size, args.loss, pretrained_tag, 5)
     if args.tag:
         args.model_name = args.model_name + '_tag_' + args.tag
     args.save_folder = os.path.join(args.save_folder, args.model_name)
@@ -205,6 +210,17 @@ def main():
         'test_acc@1': [],
         'test_acc@5': [],
     }
+
+    # Evaluate before training (epoch 0 baseline)
+    print('Epoch 0 (before training)')
+    print('-' * 10)
+    test_acc_1, test_acc_5 = test(model, dataloaders_dict['memory'], dataloaders_dict['test'], args, epoch=0,
+                                  device='cuda')
+    results['test_acc@1'].append(test_acc_1)
+    results['test_acc@5'].append(test_acc_5)
+    data_frame = pd.DataFrame(data=results, index=range(0, 1))
+    data_frame.to_csv(f'{args.model_name}_statistics.csv', index_label='epoch')
+
     for epoch in range(1, args.epochs + 1):
         print('Epoch {}/{}'.format(epoch, args.epochs + 1))
         print('-' * 10)

@@ -34,4 +34,5 @@ python classification/train_deepfashion.py \
     --world-size 1 \
     --rank 0 \
     --cosine \
+    --seed 0 \
     "$@"
