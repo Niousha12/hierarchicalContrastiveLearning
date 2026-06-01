@@ -29,7 +29,9 @@ python classification/train_deepfashion.py \
     --temp 0.2 \
     --ckpt pretrained_model/ \
     --criterion hsmc \
+    --model resnet50 \
     --dist-url 'tcp://localhost:10001' \
     --world-size 1 \
     --rank 0 \
-    --cosine
+    --cosine \
+    "$@"

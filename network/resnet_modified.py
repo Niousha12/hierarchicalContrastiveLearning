@@ -289,11 +289,16 @@ class ViTEncoder(nn.Module):
 class MyViT(nn.Module):
     """ViT-B/16 backbone + projection head, same interface as MyResNet."""
 
-    def __init__(self, model_name='google/vit-base-patch16-224', local_dir=None, head='mlp', feat_dim=128):
+    def __init__(self, model_name='google/vit-base-patch16-224', local_dir=None, pretrained=True, head='mlp', feat_dim=128):
         super(MyViT, self).__init__()
-        from transformers import ViTModel
-        source = local_dir if local_dir is not None else model_name
-        vit = ViTModel.from_pretrained(source, local_files_only=(local_dir is not None))
+        from transformers import ViTModel, ViTConfig
+        if pretrained:
+            source = local_dir if local_dir is not None else model_name
+            vit = ViTModel.from_pretrained(source, local_files_only=(local_dir is not None))
+        else:
+            config = ViTConfig.from_pretrained(local_dir if local_dir is not None else model_name,
+                                               local_files_only=(local_dir is not None))
+            vit = ViTModel(config)
         self.encoder = ViTEncoder(vit)
         dim_in = vit.config.hidden_size  # 768 for ViT-B/16
         if head == 'linear':

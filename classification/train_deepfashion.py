@@ -242,22 +242,22 @@ def set_model(device, args):
         criterion = HMLC(temperature=args.temp, loss_type=args.loss, layer_penalty=torch.exp)
 
     if args.model == 'vit':
-        model = resnet_modified.MyViT(local_dir='pretrained_model/vit-base-patch16-224')
+        model = resnet_modified.MyViT(local_dir='pretrained_model/vit-base-patch16-224', pretrained=args.pretrained)
     else:
         model = resnet_modified.MyResNet(name='resnet50')
-        # Load pretrained ResNet50 weights
-        state_dict = torch.load("pretrained_model/resnet50-19c8e357.pth", map_location='cpu', weights_only=False)
-        model_dict = model.state_dict()
-        new_state_dict = {}
-        exception_list = ["fc.weight", "fc.bias"]
-        for k, v in state_dict.items():
-            if not k.startswith('module.head'):
-                if k in exception_list:
-                    continue
-                k = 'encoder.' + k
-                new_state_dict[k] = v
-        model_dict.update(new_state_dict)
-        model.load_state_dict(model_dict)
+        if args.pretrained:
+            state_dict = torch.load("pretrained_model/resnet50-19c8e357.pth", map_location='cpu', weights_only=False)
+            model_dict = model.state_dict()
+            new_state_dict = {}
+            exception_list = ["fc.weight", "fc.bias"]
+            for k, v in state_dict.items():
+                if not k.startswith('module.head'):
+                    if k in exception_list:
+                        continue
+                    k = 'encoder.' + k
+                    new_state_dict[k] = v
+            model_dict.update(new_state_dict)
+            model.load_state_dict(model_dict)
 
     model = model.to(device)
     criterion = criterion.to(device)
