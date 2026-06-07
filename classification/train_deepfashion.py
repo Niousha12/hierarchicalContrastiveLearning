@@ -167,9 +167,9 @@ def main():
         os.makedirs(args.save_folder)
 
     pretrained_tag = 'pretrained' if args.pretrained else 'scratch'
-    args.model_name = '{}_{}_lr_{}_decay_{}_bsz_{}_loss_{}_{}trial_{}'. \
+    args.model_name = '{}_{}_lr_{}_decay_{}_bsz_{}_{}'. \
         format(args.criterion, args.model, args.learning_rate,
-               args.lr_decay_rate, args.batch_size, args.loss, pretrained_tag, 5)
+               args.lr_decay_rate, args.batch_size, pretrained_tag)
     if args.tag:
         args.model_name = args.model_name + '_tag_' + args.tag
     args.save_folder = os.path.join(args.save_folder, args.model_name)
@@ -228,7 +228,7 @@ def main():
 
         # train for one epoch
         train(dataloaders_dict, model, criterion, optimizer, scheduler, epoch, args)
-        # scheduler.step()
+        scheduler.step()
 
         test_acc_1, test_acc_5 = test(model, dataloaders_dict['memory'], dataloaders_dict['test'], args, epoch=epoch,
                                       device='cuda')
@@ -236,7 +236,7 @@ def main():
         results['test_acc@5'].append(test_acc_5)
 
         # save statistics
-        data_frame = pd.DataFrame(data=results, index=range(1, epoch + 1))
+        data_frame = pd.DataFrame(data=results, index=range(0, epoch + 1))
         data_frame.to_csv(f'{args.model_name}_statistics.csv', index_label='epoch')
 
         # To save checkpoint, uncomment the following lines
@@ -322,7 +322,7 @@ def train(dataloaders, model, criterion, optimizer, scheduler, epoch, args):
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-        scheduler.step()
+        # scheduler.step()
 
         # measure elapsed time
         batch_time.update(time.time() - end)
