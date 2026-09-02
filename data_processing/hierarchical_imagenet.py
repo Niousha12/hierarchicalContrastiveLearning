@@ -78,7 +78,7 @@ class ImagenetHierarchihcalDataset(Dataset):
         images0, images1, labels = [], [], []
         for i in index:
             image = Image.open(self.filenames[i]).convert("RGB")
-            label = list(self.get_label_split_by_index(i))
+            label = list(self.get_label_split_by_index(i)) + [i]
             if self.transform:
                 image0, image1 = self.transform(image)
             images0.append(image0)
@@ -96,9 +96,9 @@ class ImagenetHierarchihcalDataset(Dataset):
                 random_label = label
                 if len(curr_dict.keys()) != 1:
                     while (random_label == label):
-                        random_label = random.sample(curr_dict.keys(), 1)[0]
+                        random_label = random.sample(list(curr_dict.keys()), 1)[0]
             else:
-                random_label = random.sample(curr_dict.keys(), 1)[0]
+                random_label = random.sample(list(curr_dict.keys()), 1)[0]
             curr_dict = curr_dict[random_label]
             top_level = False
         return curr_dict
@@ -177,9 +177,9 @@ class ImagenetHierarchihcalDatasetEval(Dataset):
                 random_label = label
                 if len(curr_dict.keys()) != 1:
                     while (random_label == label):
-                        random_label = random.sample(curr_dict.keys(), 1)[0]
+                        random_label = random.sample(list(curr_dict.keys()), 1)[0]
             else:
-                random_label = random.sample(curr_dict.keys(), 1)[0]
+                random_label = random.sample(list(curr_dict.keys()), 1)[0]
             curr_dict = curr_dict[random_label]
             top_level = False
         return curr_dict
@@ -198,13 +198,9 @@ class HierarchicalBatchSampler(Sampler):
         self.dataset = dataset
         self.epoch=0
         if num_replicas is None:
-            if not dist.is_available():
-                raise RuntimeError("Requires distributed package to be available")
-            num_replicas = dist.get_world_size()
+            num_replicas = 1
         if rank is None:
-            if not dist.is_available():
-                raise RuntimeError("Requires distributed package to be available")
-            rank = dist.get_rank()
+            rank = 0
         self.num_replicas = num_replicas
         self.rank = rank
         self.drop_last = drop_last
