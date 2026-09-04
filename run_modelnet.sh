@@ -62,7 +62,7 @@ export PYTHONPATH="$PWD:$PYTHONPATH"
 mkdir -p slogs
 
 # ---- Adjust this path ----
-MODELNET_ROOT="/project/6045013/nsadjadi/data/modelnet40_rendered"
+MODELNET_ROOT="/scratch/nsadjadi/modelNet40/modelnet40_images_new_12x"
 # --------------------------
 
 python classification/train_modelnet.py \

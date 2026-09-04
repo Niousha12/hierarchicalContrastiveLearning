@@ -26,6 +26,36 @@ def _find_images(directory):
     return []
 
 
+def _resolve_class_dirs(root_dir, split):
+    """Return (layout, list of (cls_name, image_dir)) sorted by cls_name.
+
+    Supports two directory layouts automatically:
+      split_first:  root/{split}/{class}/images   (e.g. root/train/airplane/*.png)
+      class_first:  root/{class}/{split}/images   (e.g. root/airplane/train/*.png)
+    """
+    split_first_dir = os.path.join(root_dir, split)
+    if os.path.isdir(split_first_dir):
+        # split_first layout
+        class_names = sorted(
+            d for d in os.listdir(split_first_dir)
+            if os.path.isdir(os.path.join(split_first_dir, d))
+        )
+        return [(cls, os.path.join(split_first_dir, cls)) for cls in class_names]
+
+    # class_first layout: root/{class}/{split}/
+    class_names = sorted(
+        d for d in os.listdir(root_dir)
+        if os.path.isdir(os.path.join(root_dir, d, split))
+    )
+    if not class_names:
+        raise FileNotFoundError(
+            f"Could not find images in either '{split_first_dir}' (split-first layout) "
+            f"or '{root_dir}/{{class}}/{split}/' (class-first layout). "
+            f"Check that --root-dir is correct."
+        )
+    return [(cls, os.path.join(root_dir, cls, split)) for cls in class_names]
+
+
 def _parse_model_id(filename):
     """Extract model_id from a ModelNet rendered-view filename.
 
@@ -57,26 +87,23 @@ class ModelNetHierarchicalDataset(Dataset):
     2 loss terms: category-level and model-level (sample_idx gives SimCLR-like
     finest-level behaviour where only the two TwoCropTransform views are positive).
 
-    Directory structure expected:
-        {root}/{split}/{class_name}/{class_name}_{model_id:04d}_{view:03d}.{ext}
+    Supported directory layouts (auto-detected):
+      split_first:  {root}/{split}/{class_name}/*.{ext}
+      class_first:  {root}/{class_name}/{split}/*.{ext}  <- modelnet40_images_new_12x
     """
 
     def __init__(self, root_dir, split='train', transform=None):
         """
         Args:
             root_dir: root directory of rendered ModelNet40 images.
-            split: subdirectory name for the split, e.g. 'train' or 'test'.
+            split: split subdirectory name, e.g. 'train' or 'test'.
             transform: callable transform (should be TwoCropTransform for training).
         """
         self.root_dir = root_dir
         self.transform = transform
 
-        split_dir = os.path.join(root_dir, split)
-        class_dirs = sorted(
-            [d for d in os.listdir(split_dir)
-             if os.path.isdir(os.path.join(split_dir, d))]
-        )
-        class_to_int = {cls: i for i, cls in enumerate(class_dirs)}
+        class_dirs = _resolve_class_dirs(root_dir, split)
+        class_to_int = {cls: i for i, (cls, _) in enumerate(class_dirs)}
 
         self.filenames = []
         self.cat_labels = []
@@ -89,9 +116,8 @@ class ModelNetHierarchicalDataset(Dataset):
         model_id_str_to_int = {}
         model_id_cnt = 0
 
-        for cls_name in class_dirs:
+        for cls_name, cls_dir in class_dirs:
             cat_int = class_to_int[cls_name]
-            cls_dir = os.path.join(split_dir, cls_name)
             files = _find_images(cls_dir)
 
             for filepath in files:
@@ -162,18 +188,14 @@ class ModelNetHierarchicalDatasetEval(Dataset):
         """
         Args:
             root_dir: root directory of rendered ModelNet40 images.
-            split: subdirectory name for the split, e.g. 'train' or 'test'.
+            split: split subdirectory name, e.g. 'train' or 'test'.
             transform: callable transform applied to each image.
         """
         self.root_dir = root_dir
         self.transform = transform
 
-        split_dir = os.path.join(root_dir, split)
-        class_dirs = sorted(
-            [d for d in os.listdir(split_dir)
-             if os.path.isdir(os.path.join(split_dir, d))]
-        )
-        class_to_int = {cls: i for i, cls in enumerate(class_dirs)}
+        class_dirs = _resolve_class_dirs(root_dir, split)
+        class_to_int = {cls: i for i, (cls, _) in enumerate(class_dirs)}
 
         self.filenames = []
         self.cat_labels = []
@@ -183,9 +205,8 @@ class ModelNetHierarchicalDatasetEval(Dataset):
         model_id_str_to_int = {}
         model_id_cnt = 0
 
-        for cls_name in class_dirs:
+        for cls_name, cls_dir in class_dirs:
             cat_int = class_to_int[cls_name]
-            cls_dir = os.path.join(split_dir, cls_name)
             files = _find_images(cls_dir)
 
             for filepath in files:
