@@ -80,14 +80,18 @@ class INatHierarchicalDataset(Dataset):
             file_name = img_lookup[img_id]
 
             cat = cat_info[cat_id]
-            species_str = cat['name']
+            # Use category id as the species key — 'name' in this dataset is
+            # an anonymised numeric string ('0', '1', ...) and not reliable.
+            species_str = str(cat_id)
 
-            # Determine genus
+            # Determine genus: priority order:
+            #   1. external hierarchy_file mapping
+            #   2. 'genus' field in the category JSON (iNat 2018 has this)
+            #   3. first word of species name (scientific naming fallback)
             if genus_map:
-                genus_str = genus_map.get(cat_id, species_str.split()[0])
+                genus_str = genus_map.get(cat_id, cat.get('genus', species_str.split()[0]))
             else:
-                # First word of scientific name is the genus
-                genus_str = species_str.split()[0]
+                genus_str = cat.get('genus', species_str.split()[0])
 
             # Assign integer ids
             if genus_str not in genus_str_to_int:
@@ -200,7 +204,9 @@ class INatHierarchicalDatasetEval(Dataset):
             file_name = img_lookup[img_id]
 
             cat = cat_info[cat_id]
-            species_str = cat['name']
+            # Use category id as the species key — 'name' in this dataset is
+            # an anonymised numeric string ('0', '1', ...) and not reliable.
+            species_str = str(cat_id)
 
             if genus_map:
                 genus_str = genus_map.get(cat_id, species_str.split()[0])

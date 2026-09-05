@@ -63,7 +63,7 @@ export PYTHONPATH="$PWD:$PYTHONPATH"
 mkdir -p slogs
 
 # ---- Adjust these paths ----
-INAT_ROOT="/project/6045013/nsadjadi/data/inat2018"
+INAT_ROOT="/scratch/nsadjadi/iNaturalist"
 ANN_TRAIN="${INAT_ROOT}/train2018.json"
 ANN_VAL="${INAT_ROOT}/val2018.json"
 # Optional: path to a JSON file mapping category_id (int) -> genus string.
