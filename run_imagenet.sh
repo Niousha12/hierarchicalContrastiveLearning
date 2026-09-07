@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-gpu=8
 #SBATCH --mem-per-gpu=40G
-#SBATCH --time=72:00:00
+#SBATCH --time=3-72:00:00
 #SBATCH --output=slogs/%x__%A_%a.out
 # Uncomment and set your ComputeCanada allocation account:
 # #SBATCH --account=def-yourpi
@@ -40,7 +40,7 @@
 #          -P pretrained_model/
 # ---------------------------------------------------------------------------
 
-ENVPATH="venv"
+ENVPATH="/home/nsadjadi/projects/def-lila-ab/nsadjadi/HiCAggLoss/hierarchical_contrastive/env"
 source "$ENVPATH/bin/activate"
 echo 'Venv activated'
 
@@ -50,19 +50,23 @@ export PYTHONPATH="$PWD:$PYTHONPATH"
 mkdir -p slogs
 
 # ---- Adjust these paths ----
-IMAGENET_ROOT="/project/6045013/nsadjadi/data/imagenet"
+IMAGENET_ROOT="/scratch/nsadjadi/imagenet"
 HIERARCHY_FILE="$PWD/data_processing/imagenet_hierarchy.json"
+# Path where the tar-member index is cached after the first run.
+# Delete this file if you move/re-download the dataset.
+INDEX_CACHE="$PWD/data_processing/imagenet_train_index.json"
 # ----------------------------
 
 python classification/train_imagenet.py \
     --root-dir "${IMAGENET_ROOT}" \
     --hierarchy-file "${HIERARCHY_FILE}" \
+    --imagenet-index-cache "${INDEX_CACHE}" \
     --num-classes 1000 \
     --learning_rate 0.1 \
     --lr_decay_epochs '40,80' \
     --lr_decay_rate 0.1 \
     --temp 0.1 \
-    --batch-size 512 \
+    --batch-size 128 \
     --epochs 100 \
     --criterion hmlc \
     --loss hmce \

@@ -5,79 +5,198 @@
  * For full license text, see the LICENSE file in the repo root or https://opensource.org/licenses/BSD-3-Clause
 '''
 
-import os
+import io
 import json
-import torch
+import math
+import os
+import random
+import tarfile
+from concurrent.futures import ThreadPoolExecutor
+from typing import Optional
+
 import glob
-from torch.utils.data import dataset
-import torch.distributed as dist
-from typing import TypeVar, Optional, Iterator
-from torch.utils.data.dataset import Dataset
-from torch.utils.data.sampler import Sampler, BatchSampler
-import torchvision.transforms as transforms
+import torch
 from PIL import Image
-import random, math
-import numpy as np
-from collections import defaultdict
+from torch.utils.data.dataset import Dataset
+from torch.utils.data.sampler import Sampler
+import torchvision.transforms as transforms
 
 
+# ---------------------------------------------------------------------------
+# Tar support
+# ---------------------------------------------------------------------------
+
+# Per-process cache of open tarfile handles.  Populated lazily inside worker
+# processes (after fork) so each DataLoader worker gets independent handles.
+_TAR_HANDLES: dict = {}
+
+
+def _load_image(filename: str) -> Image.Image:
+    """Load a PIL image from either a plain file path or a 'tarpath::member' key."""
+    if '::' not in filename:
+        return Image.open(filename).convert('RGB')
+    tar_path, member_name = filename.split('::', 1)
+    key = (os.getpid(), tar_path)
+    if key not in _TAR_HANDLES:
+        _TAR_HANDLES[key] = tarfile.open(tar_path, 'r:')
+    tf = _TAR_HANDLES[key]
+    f = tf.extractfile(tf.getmember(member_name))
+    return Image.open(io.BytesIO(f.read())).convert('RGB')
+
+
+def _index_one_tar(args):
+    tar_path, cls = args
+    with tarfile.open(tar_path, 'r:') as tf:
+        return [(f'{tar_path}::{m.name}', cls)
+                for m in tf.getmembers() if m.isfile()]
+
+
+def _index_train_dir(root_dir: str, cache_path: str = None):
+    """Scan root_dir/train/ for extracted class dirs or per-class tar files.
+
+    Supports two layouts automatically:
+      extracted:  root/train/{cls}/image.JPEG
+      tar-based:  root/train/{cls}.tar   (one tar per class)
+
+    An optional JSON cache file is written on first run and reloaded on
+    subsequent runs so that indexing 1 000 tar files only happens once.
+
+    Returns
+    -------
+    class_names : list[str]   sorted synset IDs (e.g. ['n01440764', ...])
+    entries     : list[tuple] (filename_key, cls_str) pairs
+    """
+    # ------------------------------------------------------------------
+    # Try cache first
+    # ------------------------------------------------------------------
+    if cache_path and os.path.exists(cache_path):
+        print(f'Loading ImageNet train index from cache: {cache_path}')
+        with open(cache_path, 'r') as f:
+            data = json.load(f)
+        return data['class_names'], [tuple(e) for e in data['entries']]
+
+    train_dir = os.path.join(root_dir, 'train')
+
+    # ------------------------------------------------------------------
+    # Extracted directories layout
+    # ------------------------------------------------------------------
+    dirs = sorted(d for d in glob.glob(train_dir + '/*/') if os.path.isdir(d))
+    if dirs:
+        class_names = [d.rstrip('/').split('/')[-1] for d in dirs]
+        entries = []
+        for d, cls in zip(dirs, class_names):
+            for f in sorted(glob.glob(os.path.join(d, '*'))):
+                if os.path.isfile(f):
+                    entries.append((f, cls))
+        # No caching needed for extracted layout (glob is fast on next run)
+        return class_names, entries
+
+    # ------------------------------------------------------------------
+    # Tar-file layout
+    # ------------------------------------------------------------------
+    tar_files = sorted(glob.glob(os.path.join(train_dir, '*.tar')))
+    if not tar_files:
+        raise FileNotFoundError(
+            f"No extracted class directories or .tar files found in {train_dir}.\n"
+            "Make sure --root-dir points to the ImageNet root and that "
+            "train/ contains either class subdirectories or per-class .tar files."
+        )
+
+    class_names = [os.path.splitext(os.path.basename(t))[0] for t in tar_files]
+    print(f'Indexing {len(tar_files)} tar files from {train_dir} '
+          f'(this runs once; use --imagenet-index-cache to persist the result)...',
+          flush=True)
+
+    args = list(zip(tar_files, class_names))
+    entries = []
+    # Use threads: tarfile listing is I/O-bound, threads give real speedup
+    with ThreadPoolExecutor(max_workers=min(16, len(tar_files))) as ex:
+        for result in ex.map(_index_one_tar, args):
+            entries.extend(result)
+
+    print(f'Indexed {len(entries)} images across {len(class_names)} classes.',
+          flush=True)
+
+    # ------------------------------------------------------------------
+    # Write cache
+    # ------------------------------------------------------------------
+    if cache_path:
+        print(f'Saving index cache to {cache_path} ...')
+        os.makedirs(os.path.dirname(os.path.abspath(cache_path)), exist_ok=True)
+        with open(cache_path, 'w') as f:
+            json.dump({'class_names': class_names, 'entries': entries}, f)
+
+    return class_names, entries
+
+
+# ---------------------------------------------------------------------------
+# Training dataset
+# ---------------------------------------------------------------------------
 
 class ImagenetHierarchihcalDataset(Dataset):
-    def __init__(self, hierarchy_file, root_dir, transform=None):
+    """ImageNet hierarchical training dataset.
+
+    Labels are [super_cat_int, cat_int, sample_idx] (3 columns) so HMLC
+    produces 2 loss terms: super-category level and category level.
+
+    Supports both extracted-directory and per-class .tar layouts in train/.
+    The val/ split is always assumed to be extracted.
+    """
+
+    def __init__(self, hierarchy_file, root_dir, transform=None,
+                 index_cache=None):
+        """
+        Args:
+            hierarchy_file: JSON mapping synset_id -> supercategory string.
+            root_dir: ImageNet root (contains train/ and val/).
+            transform: callable; should be TwoCropTransform for training.
+            index_cache: optional path to cache the tar index JSON so that
+                         re-indexing is skipped on subsequent runs.
+        """
         self.transform = transform
-        self.augment_transform = transforms.RandomChoice([
-            transforms.RandomResizedCrop(size=(256, 256), scale=(0.7, 1.)),
-            transforms.RandomHorizontalFlip(1),
-            transforms.ColorJitter(0.4, 0.4, 0.4)])
+
         with open(hierarchy_file, 'r') as f:
             sub_super = json.load(f)
+
+        class_names, entries = _index_train_dir(root_dir, cache_path=index_cache)
+
+        # Build class -> int and supercategory -> int mappings
+        class_map_str_to_int = {cls: i for i, cls in enumerate(class_names)}
+        super_class_map_str_to_int = {}
+        super_cls_cnt = 0
+
         self.filenames = []
         self.category = []
         self.super_category = []
+        # labels dict: {super_cls_int: {cls_int: [img_indices]}}
         self.labels = {}
-        directories = glob.glob(root_dir + '/train/*/')
-        class_map_str_to_int = {}
-        class_map_int_to_str = {}
-        super_class_map_str_to_int = {}
-        super_class_map_int_to_str = {}
-        for i, directory in enumerate(directories):
-            cls = directory.split('/')[-2]
-            class_map_str_to_int[cls] = i
-            class_map_int_to_str[i] = cls
-        img_cnt = 0
-        super_cls_cnt = 0
-        for i, directory in enumerate(directories):
-            files = glob.glob(directory + '*')
-            cls = directory.split('/')[-2]
-            cls_int = i
-            super_cls = sub_super[cls]
+
+        for filename_key, cls in entries:
+            cls_int = class_map_str_to_int[cls]
+            super_cls = sub_super.get(cls, cls)  # fallback to cls if not in hierarchy
             if super_cls not in super_class_map_str_to_int:
                 super_class_map_str_to_int[super_cls] = super_cls_cnt
-                super_class_map_int_to_str[super_cls_cnt] = super_cls
-                super_cls_int = super_cls_cnt
                 super_cls_cnt += 1
-            else:
-                super_cls_int = super_class_map_str_to_int[super_cls]
-            for file in files:
-                img_cnt += 1
-                if super_cls_int not in self.labels:
-                    self.labels[super_cls_int] = {}
-                if cls_int not in self.labels[super_cls_int]:
-                    self.labels[super_cls_int][cls_int] = {}
-                self.filenames.append(file)
-                self.category.append(cls_int)
-                self.super_category.append((super_cls_int))
-                self.labels[super_cls_int][cls_int] = img_cnt
+            super_cls_int = super_class_map_str_to_int[super_cls]
+
+            idx = len(self.filenames)
+            self.filenames.append(filename_key)
+            self.category.append(cls_int)
+            self.super_category.append(super_cls_int)
+
+            if super_cls_int not in self.labels:
+                self.labels[super_cls_int] = {}
+            if cls_int not in self.labels[super_cls_int]:
+                self.labels[super_cls_int][cls_int] = []
+            self.labels[super_cls_int][cls_int].append(idx)
 
     def get_label_split_by_index(self, index):
-        category = self.category[index]
-        super_category = self.super_category[index]
-        return int(super_category), int(category)
+        return int(self.super_category[index]), int(self.category[index])
 
     def __getitem__(self, index):
         images0, images1, labels = [], [], []
         for i in index:
-            image = Image.open(self.filenames[i]).convert("RGB")
+            image = _load_image(self.filenames[i])
             label = list(self.get_label_split_by_index(i)) + [i]
             if self.transform:
                 image0, image1 = self.transform(image)
@@ -90,113 +209,144 @@ class ImagenetHierarchihcalDataset(Dataset):
     def random_sample(self, label, label_dict):
         curr_dict = label_dict
         top_level = True
-        #all sub trees end with an int index
-        while type(curr_dict) is not int:
+        # leaf nodes are lists of image indices
+        while type(curr_dict) is not list:
             if top_level:
                 random_label = label
                 if len(curr_dict.keys()) != 1:
-                    while (random_label == label):
+                    while random_label == label:
                         random_label = random.sample(list(curr_dict.keys()), 1)[0]
             else:
                 random_label = random.sample(list(curr_dict.keys()), 1)[0]
             curr_dict = curr_dict[random_label]
             top_level = False
-        return curr_dict
+        return random.sample(curr_dict, 1)[0]
 
     def __len__(self):
         return len(self.filenames)
 
 
+# ---------------------------------------------------------------------------
+# Eval dataset  (val split — always extracted)
+# ---------------------------------------------------------------------------
+
 class ImagenetHierarchihcalDatasetEval(Dataset):
-    def __init__(self, hierarchy_file, root_dir, transform=None):
+    """ImageNet evaluation dataset.
+
+    Reads images from val/ (must be extracted into class subdirectories).
+    Uses the train/ directory (extracted or tar) only to build a consistent
+    class -> int mapping that matches ImagenetHierarchihcalDataset.
+
+    Labels are [super_cat_int, cat_int].
+    """
+
+    def __init__(self, hierarchy_file, root_dir, transform=None,
+                 index_cache=None):
+        """
+        Args:
+            hierarchy_file: JSON mapping synset_id -> supercategory string.
+            root_dir: ImageNet root (contains train/ and val/).
+            transform: callable applied to each image.
+            index_cache: same cache path used for the training dataset so that
+                         class-name discovery reuses the cached index.
+        """
         self.transform = transform
-        self.augment_transform = transforms.RandomChoice([
-            transforms.RandomResizedCrop(size=(256, 256), scale=(0.7, 1.)),
-            transforms.RandomHorizontalFlip(1),
-            transforms.ColorJitter(0.4, 0.4, 0.4)])
+
         with open(hierarchy_file, 'r') as f:
             sub_super = json.load(f)
+
+        # Discover class names from train (consistent with training dataset)
+        class_names, _ = _index_train_dir(root_dir, cache_path=index_cache)
+        class_map_str_to_int = {cls: i for i, cls in enumerate(class_names)}
+
+        super_class_map_str_to_int = {}
+        super_cls_cnt = 0
+
         self.filenames = []
         self.category = []
         self.super_category = []
         self.labels = {}
-        directories = glob.glob(root_dir + '/train/*/')
-        class_map_str_to_int = {}
-        class_map_int_to_str = {}
-        super_class_map_str_to_int = {}
-        super_class_map_int_to_str = {}
-        for i, directory in enumerate(directories):
-            cls = directory.split('/')[-2]
-            class_map_str_to_int[cls] = i
-            class_map_int_to_str[i] = cls
-        img_cnt = 0
-        super_cls_cnt = 0
-        for i, directory in enumerate(directories):
-            files = glob.glob(directory + '*')
-            cls = directory.split('/')[-2]
-            cls_int = i
-            super_cls = sub_super[cls]
+
+        val_dir = os.path.join(root_dir, 'val')
+        for cls in class_names:
+            cls_int = class_map_str_to_int[cls]
+            super_cls = sub_super.get(cls, cls)
             if super_cls not in super_class_map_str_to_int:
                 super_class_map_str_to_int[super_cls] = super_cls_cnt
-                super_class_map_int_to_str[super_cls_cnt] = super_cls
-                super_cls_int = super_cls_cnt
                 super_cls_cnt += 1
-            else:
-                super_cls_int = super_class_map_str_to_int[super_cls]
-            for file in files:
-                img_cnt += 1
+            super_cls_int = super_class_map_str_to_int[super_cls]
+
+            cls_val_dir = os.path.join(val_dir, cls)
+            if not os.path.isdir(cls_val_dir):
+                continue
+            files = sorted(glob.glob(os.path.join(cls_val_dir, '*')))
+
+            for filepath in files:
+                if not os.path.isfile(filepath):
+                    continue
+                idx = len(self.filenames)
+                self.filenames.append(filepath)
+                self.category.append(cls_int)
+                self.super_category.append(super_cls_int)
+
                 if super_cls_int not in self.labels:
                     self.labels[super_cls_int] = {}
                 if cls_int not in self.labels[super_cls_int]:
-                    self.labels[super_cls_int][cls_int] = {}
-                self.filenames.append(file)
-                self.category.append(cls_int)
-                self.super_category.append((super_cls_int))
-                self.labels[super_cls_int][cls_int] = img_cnt
+                    self.labels[super_cls_int][cls_int] = []
+                self.labels[super_cls_int][cls_int].append(idx)
+
+        self.targets = self.category.copy()
 
     def get_label_split_by_index(self, index):
-        category = self.category[index]
-        super_category = self.super_category[index]
-        return int(super_category), int(category)
-
+        return int(self.super_category[index]), int(self.category[index])
 
     def __getitem__(self, index):
-        image = Image.open(self.filenames[index]).convert("RGB")
+        image = Image.open(self.filenames[index]).convert('RGB')
         label = list(self.get_label_split_by_index(index))
         if self.transform:
             image = self.transform(image)
-
         return image, label
 
     def random_sample(self, label, label_dict):
         curr_dict = label_dict
         top_level = True
-        #all sub trees end with an int index
-        while type(curr_dict) is not int:
+        while type(curr_dict) is not list:
             if top_level:
                 random_label = label
                 if len(curr_dict.keys()) != 1:
-                    while (random_label == label):
+                    while random_label == label:
                         random_label = random.sample(list(curr_dict.keys()), 1)[0]
             else:
                 random_label = random.sample(list(curr_dict.keys()), 1)[0]
             curr_dict = curr_dict[random_label]
             top_level = False
-        return curr_dict
+        return random.sample(curr_dict, 1)[0]
 
     def __len__(self):
         return len(self.filenames)
 
+
+# ---------------------------------------------------------------------------
+# Hierarchical batch sampler
+# ---------------------------------------------------------------------------
+
 class HierarchicalBatchSampler(Sampler):
+    """2-level hierarchical batch sampler for ImageNet (super_cls -> cls).
+
+    For each anchor, samples one same-class image and one same-supercategory
+    (different class) image, giving HMLC three contrastive levels per anchor.
+    No distributed training requirement: defaults to num_replicas=1, rank=0.
+    """
+
     def __init__(self, batch_size: int,
-        drop_last: bool, dataset: ImagenetHierarchihcalDataset,
-        num_replicas: Optional[int] = None,
-        rank: Optional[int] = None) -> None:
+                 drop_last: bool, dataset: ImagenetHierarchihcalDataset,
+                 num_replicas: Optional[int] = None,
+                 rank: Optional[int] = None) -> None:
 
         super().__init__(dataset)
         self.batch_size = batch_size
         self.dataset = dataset
-        self.epoch=0
+        self.epoch = 0
         if num_replicas is None:
             num_replicas = 1
         if rank is None:
@@ -204,31 +354,21 @@ class HierarchicalBatchSampler(Sampler):
         self.num_replicas = num_replicas
         self.rank = rank
         self.drop_last = drop_last
-        # If the dataset length is evenly divisible by # of replicas, then there
-        # is no need to drop any data, since the dataset will be split equally.
-        if self.drop_last and len(self.dataset) % self.num_replicas != 0:  # type: ignore
-            # Split to nearest available length that is evenly divisible.
-            # This is to ensure each rank receives the same amount of data when
-            # using this Sampler.
+        if self.drop_last and len(self.dataset) % self.num_replicas != 0:
             self.num_samples = math.ceil(
-                # `type:ignore` is required because Dataset cannot provide a default __len__
-                # see NOTE in pytorch/torch/utils/data/sampler.py
-                (len(self.dataset) - self.num_replicas) / \
-                self.num_replicas  # type: ignore
+                (len(self.dataset) - self.num_replicas) / self.num_replicas
             )
         else:
-            self.num_samples = math.ceil(
-                len(self.dataset) / self.num_replicas)  # type: ignore
+            self.num_samples = math.ceil(len(self.dataset) / self.num_replicas)
         self.total_size = self.num_samples * self.num_replicas
         print(self.total_size, self.num_replicas, self.batch_size,
               self.num_samples, len(self.dataset), self.rank)
 
-
-    def random_unvisited_sample(self, label, label_dict, visited, indices, remaining, num_attempt=10):
+    def random_unvisited_sample(self, label, label_dict, visited, indices,
+                                remaining, num_attempt=10):
         attempt = 0
         while attempt < num_attempt:
-            idx = self.dataset.random_sample(
-                label, label_dict)
+            idx = self.dataset.random_sample(label, label_dict)
             if idx not in visited and idx in indices:
                 visited.add(idx)
                 return idx
@@ -245,15 +385,11 @@ class HierarchicalBatchSampler(Sampler):
         indices = torch.randperm(len(self.dataset), generator=g).tolist()
 
         if not self.drop_last:
-            # add extra samples to make it evenly divisible
             indices += indices[:(self.total_size - len(indices))]
         else:
-            # remove tail of data to make it evenly divisible.
             indices = indices[:self.total_size]
 
         assert len(indices) == self.total_size
-
-        # subsample
         indices = indices[self.rank:self.total_size:self.num_replicas]
         assert len(indices) == self.num_samples
 
@@ -264,7 +400,7 @@ class HierarchicalBatchSampler(Sampler):
             visited.add(idx)
             super_cls, cls = self.dataset.get_label_split_by_index(idx)
             cls_index = self.random_unvisited_sample(
-                cls, self.dataset.labels[super_cls], visited, indices,  remaining)
+                cls, self.dataset.labels[super_cls], visited, indices, remaining)
             super_cls_index = self.random_unvisited_sample(
                 super_cls, self.dataset.labels, visited, indices, remaining)
             batch.extend([super_cls_index, cls_index])

@@ -76,9 +76,13 @@ def main():
             "Make sure --imagenet-root points to the ILSVRC-2012 root directory."
         )
 
+    # Support both extracted directories (n01440764/) and tar files (n01440764.tar)
+    entries = os.listdir(train_dir)
     synset_ids = sorted(
-        d for d in os.listdir(train_dir)
-        if os.path.isdir(os.path.join(train_dir, d))
+        os.path.splitext(e)[0]
+        for e in entries
+        if os.path.isdir(os.path.join(train_dir, e))
+        or (e.endswith('.tar') and os.path.isfile(os.path.join(train_dir, e)))
     )
     print(f"Found {len(synset_ids)} classes in {train_dir}")
 

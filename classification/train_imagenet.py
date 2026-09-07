@@ -50,6 +50,9 @@ def parse_option():
                         help='ImageNet root directory (containing train/ and val/ subdirs)')
     parser.add_argument('--hierarchy-file', required=True, type=str,
                         help='path to JSON mapping ImageNet class -> supercategory')
+    parser.add_argument('--imagenet-index-cache', default='', type=str,
+                        help='path to cache the tar-member index JSON (speeds up '
+                             'subsequent runs when train/ contains .tar files)')
     parser.add_argument('--split-dir', default='', type=str,
                         help='optional subdirectory prefix under root-dir for train/val splits')
     parser.add_argument('--mode', default='train', type=str,
@@ -343,16 +346,20 @@ def load_imagenet_hierarchical(root_dir, hierarchy_file, opt):
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
     ])
 
+    index_cache = opt.imagenet_index_cache if opt.imagenet_index_cache else None
+
     train_dataset = ImagenetHierarchihcalDataset(
         hierarchy_file=hierarchy_file,
         root_dir=root_dir,
         transform=TwoCropTransform(train_transform),
+        index_cache=index_cache,
     )
 
     memory_dataset = ImagenetHierarchihcalDatasetEval(
         hierarchy_file=hierarchy_file,
         root_dir=root_dir,
         transform=test_transform,
+        index_cache=index_cache,
     )
 
     # Use val split for test evaluation; fall back to train if no val available
@@ -362,6 +369,7 @@ def load_imagenet_hierarchical(root_dir, hierarchy_file, opt):
             hierarchy_file=hierarchy_file,
             root_dir=root_dir,
             transform=test_transform,
+            index_cache=index_cache,
         )
     else:
         test_dataset = memory_dataset

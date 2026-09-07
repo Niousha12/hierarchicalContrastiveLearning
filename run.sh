@@ -25,8 +25,8 @@ python classification/train_deepfashion.py \
     --class-map-file class_map.json \
     --repeating-product-file repeating_product_ids.csv \
     --num-classes 17 \
-    --learning_rate 0.05 \
-    --temp 0.2 \
+    --learning_rate 0.1 \
+    --temp 0.1 \
     --ckpt pretrained_model/ \
     --criterion hsmc \
     --model resnet50 \
@@ -35,4 +35,5 @@ python classification/train_deepfashion.py \
     --rank 0 \
     --cosine \
     --seed 0 \
+    --tag deepfashion \
     "$@"

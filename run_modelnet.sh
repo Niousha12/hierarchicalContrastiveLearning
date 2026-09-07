@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-gpu=4
 #SBATCH --mem-per-gpu=16G
-#SBATCH --time=12:00:00
+#SBATCH --time=24:00:00
 #SBATCH --output=slogs/%x__%A_%a.out
 # Uncomment and set your ComputeCanada allocation account:
 # #SBATCH --account=def-yourpi
@@ -52,7 +52,7 @@
 #          -P pretrained_model/
 # ---------------------------------------------------------------------------
 
-ENVPATH="venv"
+ENVPATH="/home/nsadjadi/projects/def-lila-ab/nsadjadi/HiCAggLoss/hierarchical_contrastive/env"
 source "$ENVPATH/bin/activate"
 echo 'Venv activated'
 
@@ -72,7 +72,7 @@ python classification/train_modelnet.py \
     --lr_decay_epochs '40,80' \
     --lr_decay_rate 0.1 \
     --temp 0.1 \
-    --batch-size 512 \
+    --batch-size 128 \
     --epochs 100 \
     --criterion hmlc \
     --loss hmce \
