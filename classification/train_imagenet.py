@@ -123,6 +123,10 @@ def parse_option():
     parser.add_argument('--tag', type=str, default='',
                         help='tag for model name')
     parser.add_argument('--k', default=200, type=int, help='Top k most similar images used to predict the label')
+    parser.add_argument('--eval-freq', type=int, default=1,
+                        help='evaluate every N epochs (default: 1 = every epoch)')
+    parser.add_argument('--amp', action='store_true',
+                        help='use automatic mixed precision (fp16) to reduce GPU memory')
     args = parser.parse_args()
 
     iterations = args.lr_decay_epochs.split(',')
@@ -184,6 +188,8 @@ def main():
 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=5e-4)
 
+    scaler = torch.cuda.amp.GradScaler(enabled=args.amp)
+
     results = {
         'test_acc@1': [],
         'test_acc@5': [],
@@ -204,17 +210,18 @@ def main():
         print('-' * 10)
 
         # train for one epoch
-        train(dataloaders_dict, model, criterion, optimizer, scheduler, epoch, args)
+        train(dataloaders_dict, model, criterion, optimizer, scheduler, epoch, args, scaler)
         scheduler.step()
 
-        test_acc_1, test_acc_5 = test(model, dataloaders_dict['memory'], dataloaders_dict['test'], args, epoch=epoch,
-                                      device='cuda')
-        results['test_acc@1'].append(test_acc_1)
-        results['test_acc@5'].append(test_acc_5)
+        if epoch <= 3 or epoch % args.eval_freq == 0 or epoch == args.epochs:
+            test_acc_1, test_acc_5 = test(model, dataloaders_dict['memory'], dataloaders_dict['test'], args,
+                                          epoch=epoch, device='cuda')
+            results['test_acc@1'].append(test_acc_1)
+            results['test_acc@5'].append(test_acc_5)
 
-        # save statistics
-        data_frame = pd.DataFrame(data=results, index=range(0, epoch + 1))
-        data_frame.to_csv(f'{args.model_name}_statistics.csv', index_label='epoch')
+            # save statistics
+            data_frame = pd.DataFrame(data=results, index=range(0, len(results['test_acc@1'])))
+            data_frame.to_csv(f'{args.model_name}_statistics.csv', index_label='epoch')
 
         # To save checkpoint, uncomment the following lines
         # output_file = args.save_folder + '/checkpoint_{:04d}.pth.tar'.format(epoch)
@@ -272,7 +279,7 @@ def set_model(device, args):
     return model, criterion
 
 
-def train(dataloaders, model, criterion, optimizer, scheduler, epoch, args):
+def train(dataloaders, model, criterion, optimizer, scheduler, epoch, args, scaler=None):
     """
     one epoch training
     """
@@ -301,15 +308,22 @@ def train(dataloaders, model, criterion, optimizer, scheduler, epoch, args):
         bsz = labels.shape[0]  # batch size
 
         # forward
-        features = model(images)
-        f1, f2 = torch.split(features, [bsz, bsz], dim=0)
-        features = torch.cat([f1.unsqueeze(1), f2.unsqueeze(1)], dim=1)
-        loss = criterion(features, labels)
+        amp_enabled = getattr(args, 'amp', False)
+        with torch.cuda.amp.autocast(enabled=amp_enabled):
+            features = model(images)
+            f1, f2 = torch.split(features, [bsz, bsz], dim=0)
+            features = torch.cat([f1.unsqueeze(1), f2.unsqueeze(1)], dim=1)
+            loss = criterion(features, labels)
         losses.update(loss.item(), bsz)
 
         optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        if scaler is not None and amp_enabled:
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            optimizer.step()
 
         # measure elapsed time
         batch_time.update(time.time() - end)

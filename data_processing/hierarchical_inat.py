@@ -62,11 +62,24 @@ class INatHierarchicalDataset(Dataset):
         for img in data['images']:
             img_lookup[img['id']] = img['file_name']
 
-        # Build integer mappings for genus and species
+        # Build deterministic mappings from sorted categories so that
+        # the same cat_id always gets the same integer regardless of which
+        # annotation file is used.
+        sorted_cats = sorted(data['categories'], key=lambda c: c['id'])
+
         genus_str_to_int = {}
-        species_str_to_int = {}
         genus_cnt = 0
-        species_cnt = 0
+        for cat in sorted_cats:
+            cid = cat['id']
+            if genus_map:
+                g = genus_map.get(cid, cat.get('genus', str(cid)))
+            else:
+                g = cat.get('genus', str(cid))
+            if g not in genus_str_to_int:
+                genus_str_to_int[g] = genus_cnt
+                genus_cnt += 1
+
+        species_str_to_int = {str(cat['id']): i for i, cat in enumerate(sorted_cats)}
 
         self.filenames = []
         self.genus_labels = []
@@ -80,28 +93,18 @@ class INatHierarchicalDataset(Dataset):
             file_name = img_lookup[img_id]
 
             cat = cat_info[cat_id]
-            # Use category id as the species key — 'name' in this dataset is
-            # an anonymised numeric string ('0', '1', ...) and not reliable.
             species_str = str(cat_id)
 
             # Determine genus: priority order:
             #   1. external hierarchy_file mapping
             #   2. 'genus' field in the category JSON (iNat 2018 has this)
-            #   3. first word of species name (scientific naming fallback)
+            #   3. cat_id string as fallback
             if genus_map:
-                genus_str = genus_map.get(cat_id, cat.get('genus', species_str.split()[0]))
+                genus_str = genus_map.get(cat_id, cat.get('genus', str(cat_id)))
             else:
-                genus_str = cat.get('genus', species_str.split()[0])
+                genus_str = cat.get('genus', str(cat_id))
 
-            # Assign integer ids
-            if genus_str not in genus_str_to_int:
-                genus_str_to_int[genus_str] = genus_cnt
-                genus_cnt += 1
             genus_int = genus_str_to_int[genus_str]
-
-            if species_str not in species_str_to_int:
-                species_str_to_int[species_str] = species_cnt
-                species_cnt += 1
             species_int = species_str_to_int[species_str]
 
             idx = len(self.filenames)
@@ -188,10 +191,26 @@ class INatHierarchicalDatasetEval(Dataset):
         for img in data['images']:
             img_lookup[img['id']] = img['file_name']
 
+        # Build deterministic mappings from sorted categories so that
+        # the same cat_id always gets the same integer regardless of which
+        # annotation file (train vs val) is used. This is critical for KNN
+        # evaluation where the memory bank (train) and queries (val) must
+        # share the same label space.
+        sorted_cats = sorted(data['categories'], key=lambda c: c['id'])
+
         genus_str_to_int = {}
-        species_str_to_int = {}
         genus_cnt = 0
-        species_cnt = 0
+        for cat in sorted_cats:
+            cid = cat['id']
+            if genus_map:
+                g = genus_map.get(cid, cat.get('genus', str(cid)))
+            else:
+                g = cat.get('genus', str(cid))
+            if g not in genus_str_to_int:
+                genus_str_to_int[g] = genus_cnt
+                genus_cnt += 1
+
+        species_str_to_int = {str(cat['id']): i for i, cat in enumerate(sorted_cats)}
 
         self.filenames = []
         self.genus_labels = []
@@ -204,23 +223,14 @@ class INatHierarchicalDatasetEval(Dataset):
             file_name = img_lookup[img_id]
 
             cat = cat_info[cat_id]
-            # Use category id as the species key — 'name' in this dataset is
-            # an anonymised numeric string ('0', '1', ...) and not reliable.
             species_str = str(cat_id)
 
             if genus_map:
-                genus_str = genus_map.get(cat_id, species_str.split()[0])
+                genus_str = genus_map.get(cat_id, cat.get('genus', str(cat_id)))
             else:
-                genus_str = species_str.split()[0]
+                genus_str = cat.get('genus', str(cat_id))
 
-            if genus_str not in genus_str_to_int:
-                genus_str_to_int[genus_str] = genus_cnt
-                genus_cnt += 1
             genus_int = genus_str_to_int[genus_str]
-
-            if species_str not in species_str_to_int:
-                species_str_to_int[species_str] = species_cnt
-                species_cnt += 1
             species_int = species_str_to_int[species_str]
 
             idx = len(self.filenames)

@@ -1,7 +1,8 @@
 #!/bin/bash
 #SBATCH --nodes=1
 #SBATCH --tasks-per-node=1
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:a100:1       # 40 GB — Narval cluster
+# #SBATCH --gres=gpu:v100l:1    # 32 GB — Cedar cluster  (uncomment if on Cedar)
 #SBATCH --cpus-per-gpu=8
 #SBATCH --mem-per-gpu=40G
 #SBATCH --time=3-72:00:00
@@ -66,7 +67,7 @@ python classification/train_imagenet.py \
     --lr_decay_epochs '40,80' \
     --lr_decay_rate 0.1 \
     --temp 0.1 \
-    --batch-size 128 \
+    --batch-size 32 \
     --epochs 100 \
     --criterion hmlc \
     --loss hmce \
@@ -74,6 +75,8 @@ python classification/train_imagenet.py \
     --workers 8 \
     --seed 0 \
     --tag imagenet \
+    --amp \
+    --eval-freq 20 \
     "$@"
 # Note: --pretrained is NOT passed → trains from scratch (paper setting).
 # To finetune from pretrained instead add: --pretrained --ckpt pretrained_model/resnet50-19c8e357.pth

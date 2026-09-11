@@ -95,6 +95,7 @@ python classification/train_inat.py \
     --workers 8 \
     --seed 0 \
     --tag inat \
+    --eval-freq 20 \
     "$@"
 # Note: --pretrained is NOT passed → uses ImageNet pretrained weights by default
 # (action='store_false' means passing --pretrained would DISABLE pretraining).
