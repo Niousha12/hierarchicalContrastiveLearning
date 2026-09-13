@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --nodes=1
 #SBATCH --tasks-per-node=1
-#SBATCH --gres=gpu:a100:1       # 40 GB — Narval cluster
-# #SBATCH --gres=gpu:v100l:1    # 32 GB — Cedar cluster  (uncomment if on Cedar)
+#SBATCH --gres=gpu:a100:4       # 4 × 40 GB A100s — Narval cluster
+# #SBATCH --gres=gpu:v100l:4    # 4 × 32 GB V100s — Cedar cluster (uncomment if on Cedar)
 #SBATCH --cpus-per-gpu=8
 #SBATCH --mem-per-gpu=40G
 #SBATCH --time=3-72:00:00
@@ -56,9 +56,17 @@ HIERARCHY_FILE="$PWD/data_processing/imagenet_hierarchy.json"
 # Path where the tar-member index is cached after the first run.
 # Delete this file if you move/re-download the dataset.
 INDEX_CACHE="$PWD/data_processing/imagenet_train_index.json"
+# Number of GPUs per node (must match --gres=gpu:a100:N above)
+GPUS_PER_NODE=4
 # ----------------------------
 
-python classification/train_imagenet.py \
+# torchrun sets LOCAL_RANK, RANK, WORLD_SIZE, MASTER_ADDR, MASTER_PORT
+# automatically for each spawned process.
+#
+# --batch-size is per-GPU; effective batch = batch_size × GPUS_PER_NODE.
+# With 4 GPUs and batch-size 128 → effective batch 512.
+torchrun --nproc_per_node=${GPUS_PER_NODE} \
+    classification/train_imagenet.py \
     --root-dir "${IMAGENET_ROOT}" \
     --hierarchy-file "${HIERARCHY_FILE}" \
     --imagenet-index-cache "${INDEX_CACHE}" \
@@ -67,7 +75,7 @@ python classification/train_imagenet.py \
     --lr_decay_epochs '40,80' \
     --lr_decay_rate 0.1 \
     --temp 0.1 \
-    --batch-size 32 \
+    --batch-size 128 \
     --epochs 100 \
     --criterion hmlc \
     --loss hmce \
@@ -80,3 +88,6 @@ python classification/train_imagenet.py \
     "$@"
 # Note: --pretrained is NOT passed → trains from scratch (paper setting).
 # To finetune from pretrained instead add: --pretrained --ckpt pretrained_model/resnet50-19c8e357.pth
+#
+# To run on a single GPU (no distribution), use:
+#   torchrun --nproc_per_node=1 classification/train_imagenet.py ...

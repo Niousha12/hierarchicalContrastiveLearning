@@ -70,7 +70,7 @@ def parse_option():
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='manual epoch number (useful on restarts)')
     parser.add_argument('-b', '--batch-size', default=512, type=int,
-                        metavar='N', help='mini-batch size (default: 512)')
+                        metavar='N', help='mini-batch size per GPU (default: 512)')
     parser.add_argument('--print-freq', '-p', default=10, type=int,
                         metavar='N', help='print frequency (default: 10)')
     parser.add_argument('--ckpt', type=str, default='',
@@ -98,24 +98,8 @@ def parse_option():
                         help='using cosine annealing')
     parser.add_argument('--warm', action='store_true',
                         help='warm-up for large batch training')
-    parser.add_argument('--world-size', default=-1, type=int,
-                        help='number of nodes for distributed training')
-    parser.add_argument('--rank', default=-1, type=int,
-                        help='node rank for distributed training')
-    parser.add_argument('--dist-url', default='tcp://224.66.41.62:23456',
-                        type=str,
-                        help='url used to set up distributed training')
-    parser.add_argument('--dist-backend', default='nccl', type=str,
-                        help='distributed backend')
     parser.add_argument('--seed', default=None, type=int,
-                        help='seed for initializing training. ')
-    parser.add_argument('--gpu', default=0, type=int,
-                        help='GPU id to use.')
-    parser.add_argument('--multiprocessing-distributed', action='store_true',
-                        help='Use multi-processing distributed training to launch '
-                             'N processes per node, which has N GPUs. This is the '
-                             'fastest way to use PyTorch for either single node or '
-                             'multi node data parallel training')
+                        help='seed for initializing training.')
     parser.add_argument('--loss', type=str, default='hmce',
                         help='loss type', choices=['hmc', 'hce', 'hmce'])
     parser.add_argument('--criterion', type=str, default='hmlc', choices=['hmlc', 'hsmc'],
@@ -133,7 +117,7 @@ def parse_option():
     args.lr_decay_epochs = list([])
     for it in iterations:
         args.lr_decay_epochs.append(int(it))
-    # warm-up for large-batch training,
+    # warm-up for large-batch training
     if args.batch_size >= 256:
         args.warm = True
     if args.warm:
@@ -152,17 +136,69 @@ def parse_option():
 best_prec1 = 0
 
 
+def concat_all_gather(tensor, rank, world_size, device):
+    """All-gather a tensor across all ranks, handling variable batch sizes.
+
+    Gradient flows through the local rank's contribution (other ranks'
+    contributions are detached, as is standard for contrastive learning).
+
+    Args:
+        tensor: local tensor of shape [N_local, ...].
+        rank: this process's global rank.
+        world_size: total number of processes.
+        device: CUDA device for this process.
+    Returns:
+        Concatenated tensor of shape [sum(N_i), ...] where N_i is each
+        rank's local batch size.
+    """
+    # Step 1: exchange batch sizes (handles the +0/+1/+2 variation from
+    # HierarchicalBatchSampler's triplet-based yield logic)
+    local_n = torch.tensor(tensor.shape[0], device=device)
+    all_ns = [torch.zeros_like(local_n) for _ in range(world_size)]
+    dist.all_gather(all_ns, local_n)
+    all_ns_int = [int(n.item()) for n in all_ns]
+    max_n = max(all_ns_int)
+
+    # Step 2: pad to common size so all_gather works
+    pad = max_n - tensor.shape[0]
+    if pad > 0:
+        padded = torch.cat([tensor, tensor.new_zeros(pad, *tensor.shape[1:])], dim=0)
+    else:
+        padded = tensor  # no copy; keeps autograd graph
+
+    # Step 3: gather from all ranks
+    gathered = [torch.zeros_like(padded) for _ in range(world_size)]
+    dist.all_gather(gathered, padded)
+
+    # Step 4: restore gradient path for local rank's slice
+    gathered[rank] = padded
+
+    # Step 5: trim padding and concatenate
+    return torch.cat([g[:n] for g, n in zip(gathered, all_ns_int)], dim=0)
+
+
 def main():
     global args, best_prec1
     args = parse_option()
-    if args.seed is not None:
-        random.seed(args.seed)
-        torch.manual_seed(args.seed)
-        torch.cuda.manual_seed_all(args.seed)
 
-    args.save_folder = './model'
-    if not os.path.isdir(args.save_folder):
-        os.makedirs(args.save_folder)
+    # ---------------------------------------------------------------
+    # Distributed setup — launched via torchrun (sets env vars
+    # LOCAL_RANK, RANK, WORLD_SIZE, MASTER_ADDR, MASTER_PORT).
+    # ---------------------------------------------------------------
+    dist.init_process_group(backend='nccl', init_method='env://')
+    local_rank = int(os.environ.get('LOCAL_RANK', 0))
+    rank = dist.get_rank()
+    world_size = dist.get_world_size()
+    torch.cuda.set_device(local_rank)
+    device = torch.device('cuda', local_rank)
+    is_main = (rank == 0)
+    # ---------------------------------------------------------------
+
+    if args.seed is not None:
+        # Different seed per rank → different augmentation views across GPUs
+        random.seed(args.seed + rank)
+        torch.manual_seed(args.seed + rank)
+        torch.cuda.manual_seed_all(args.seed + rank)
 
     pretrained_tag = 'pretrained' if args.pretrained else 'scratch'
     args.model_name = '{}_{}_lr_{}_decay_{}_bsz_{}_{}'. \
@@ -170,23 +206,44 @@ def main():
                args.lr_decay_rate, args.batch_size, pretrained_tag)
     if args.tag:
         args.model_name = args.model_name + '_tag_' + args.tag
-    args.save_folder = os.path.join(args.save_folder, args.model_name)
-    if not os.path.isdir(args.save_folder):
-        os.makedirs(args.save_folder)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if is_main:
+        save_folder = os.path.join('./model', args.model_name)
+        os.makedirs(save_folder, exist_ok=True)
+    # Ensure all ranks wait until rank 0 has created the directory
+    dist.barrier()
 
-    print("=> creating model '{}'".format(args.model))
-    model, criterion = set_model(device, args)
+    if is_main:
+        print("=> creating model '{}'".format(args.model))
 
+    # Build model and criterion on CPU first, then move to GPU after
+    # setting requires_grad flags (so DDP sees the correct param set).
+    model, criterion = set_model(args)
     set_parameter_requires_grad(model, args.feature_extract)
-    optimizer = setup_optimizer(model, args.learning_rate, args.momentum, args.weight_decay, args.feature_extract)
+
+    # SyncBatchNorm keeps BN statistics consistent across all GPUs.
+    if world_size > 1:
+        model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
+
+    model = model.to(device)
+    criterion = criterion.to(device)
+
+    # Wrap with DDP — gradient reduction happens automatically during
+    # backward; find_unused_parameters=True handles frozen layers.
+    model = torch.nn.parallel.DistributedDataParallel(
+        model, device_ids=[local_rank], find_unused_parameters=True)
+
+    optimizer = setup_optimizer(model, args.learning_rate, args.momentum,
+                                args.weight_decay, args.feature_extract,
+                                is_main=is_main)
     cudnn.benchmark = True
 
     root_dir = args.root_dir if args.root_dir else args.data
-    dataloaders_dict, sampler = load_imagenet_hierarchical(root_dir, args.hierarchy_file, args)
+    dataloaders_dict, sampler = load_imagenet_hierarchical(
+        root_dir, args.hierarchy_file, args, rank=rank, world_size=world_size)
 
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=5e-4)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=args.epochs, eta_min=5e-4)
 
     scaler = torch.cuda.amp.GradScaler(enabled=args.amp)
 
@@ -195,125 +252,126 @@ def main():
         'test_acc@5': [],
     }
 
-    # Evaluate before training (epoch 0 baseline)
-    print('Epoch 0 (before training)')
-    print('-' * 10)
-    test_acc_1, test_acc_5 = test(model, dataloaders_dict['memory'], dataloaders_dict['test'], args, epoch=0,
-                                  device='cuda')
-    results['test_acc@1'].append(test_acc_1)
-    results['test_acc@5'].append(test_acc_5)
-    data_frame = pd.DataFrame(data=results, index=range(0, 1))
-    data_frame.to_csv(f'{args.model_name}_statistics.csv', index_label='epoch')
+    # Evaluate before training (epoch 0 baseline) — rank 0 only
+    if is_main:
+        print('Epoch 0 (before training)')
+        print('-' * 10)
+        test_acc_1, test_acc_5 = test(
+            model.module, dataloaders_dict['memory'], dataloaders_dict['test'],
+            args, epoch=0, device=device)
+        results['test_acc@1'].append(test_acc_1)
+        results['test_acc@5'].append(test_acc_5)
+        pd.DataFrame(data=results, index=range(1)).to_csv(
+            f'{args.model_name}_statistics.csv', index_label='epoch')
 
     for epoch in range(1, args.epochs + 1):
-        print('Epoch {}/{}'.format(epoch, args.epochs + 1))
-        print('-' * 10)
+        # Advance sampler's epoch so each epoch gets a different shuffle
+        sampler['train'].set_epoch(epoch)
 
-        # train for one epoch
-        train(dataloaders_dict, model, criterion, optimizer, scheduler, epoch, args, scaler)
+        if is_main:
+            print('Epoch {}/{}'.format(epoch, args.epochs))
+            print('-' * 10)
+
+        train(dataloaders_dict, model, criterion, optimizer, epoch, args,
+              scaler, rank=rank, world_size=world_size, device=device,
+              is_main=is_main)
         scheduler.step()
 
-        if epoch <= 3 or epoch % args.eval_freq == 0 or epoch == args.epochs:
-            test_acc_1, test_acc_5 = test(model, dataloaders_dict['memory'], dataloaders_dict['test'], args,
-                                          epoch=epoch, device='cuda')
+        # Evaluation and logging are done only on rank 0
+        if is_main and (epoch <= 3 or epoch % args.eval_freq == 0 or epoch == args.epochs):
+            test_acc_1, test_acc_5 = test(
+                model.module, dataloaders_dict['memory'], dataloaders_dict['test'],
+                args, epoch=epoch, device=device)
             results['test_acc@1'].append(test_acc_1)
             results['test_acc@5'].append(test_acc_5)
 
-            # save statistics
-            data_frame = pd.DataFrame(data=results, index=range(0, len(results['test_acc@1'])))
-            data_frame.to_csv(f'{args.model_name}_statistics.csv', index_label='epoch')
+            pd.DataFrame(data=results, index=range(len(results['test_acc@1']))).to_csv(
+                f'{args.model_name}_statistics.csv', index_label='epoch')
 
-        # To save checkpoint, uncomment the following lines
-        # output_file = args.save_folder + '/checkpoint_{:04d}.pth.tar'.format(epoch)
-        #
-        # save_checkpoint({
-        #     'epoch': epoch + 1,
-        #     'arch': args.model,
-        #     'state_dict': model.state_dict(),
-        #     'optimizer': optimizer.state_dict(),
-        # }, is_best=False,
-        #     filename=output_file)
+        # Keep all ranks in sync after each epoch
+        dist.barrier()
+
+    dist.destroy_process_group()
 
 
-def set_model(device, args):
+def set_model(args):
+    """Build model and criterion. Does NOT move to GPU (done in main)."""
     if args.criterion == 'hsmc':
         criterion = HierarchicalSupervisedDCL(temperature=args.temp)
     else:
         criterion = HMLC(temperature=args.temp, loss_type=args.loss, layer_penalty=torch.exp)
 
     if args.model == 'vit':
-        model = resnet_modified.MyViT(local_dir='pretrained_model/vit-base-patch16-224', pretrained=args.pretrained)
+        model = resnet_modified.MyViT(
+            local_dir='pretrained_model/vit-base-patch16-224', pretrained=args.pretrained)
     else:
         model = resnet_modified.MyResNet(name='resnet50')
         if args.pretrained:
-            if args.ckpt:
-                state_dict = torch.load(args.ckpt, map_location='cpu', weights_only=False)
-                model_dict = model.state_dict()
-                new_state_dict = {}
-                exception_list = ["fc.weight", "fc.bias"]
-                for k, v in state_dict.items():
-                    if not k.startswith('module.head'):
-                        if k in exception_list:
-                            continue
-                        k = 'encoder.' + k
-                        new_state_dict[k] = v
-                model_dict.update(new_state_dict)
-                model.load_state_dict(model_dict)
-            else:
-                state_dict = torch.load("pretrained_model/resnet50-19c8e357.pth", map_location='cpu', weights_only=False)
-                model_dict = model.state_dict()
-                new_state_dict = {}
-                exception_list = ["fc.weight", "fc.bias"]
-                for k, v in state_dict.items():
-                    if not k.startswith('module.head'):
-                        if k in exception_list:
-                            continue
-                        k = 'encoder.' + k
-                        new_state_dict[k] = v
-                model_dict.update(new_state_dict)
-                model.load_state_dict(model_dict)
-
-    model = model.to(device)
-    criterion = criterion.to(device)
+            ckpt_path = args.ckpt if args.ckpt else 'pretrained_model/resnet50-19c8e357.pth'
+            state_dict = torch.load(ckpt_path, map_location='cpu', weights_only=False)
+            model_dict = model.state_dict()
+            new_state_dict = {}
+            exception_list = ['fc.weight', 'fc.bias']
+            for k, v in state_dict.items():
+                if not k.startswith('module.head'):
+                    if k in exception_list:
+                        continue
+                    k = 'encoder.' + k
+                    new_state_dict[k] = v
+            model_dict.update(new_state_dict)
+            model.load_state_dict(model_dict)
 
     return model, criterion
 
 
-def train(dataloaders, model, criterion, optimizer, scheduler, epoch, args, scaler=None):
-    """
-    one epoch training
-    """
-    log_path = f"{args.model_name}_train_stats.log"
+def train(dataloaders, model, criterion, optimizer, epoch, args, scaler=None,
+          rank=0, world_size=1, device=None, is_main=True):
+    """One epoch of training with cross-GPU feature aggregation before loss."""
+    if device is None:
+        device = torch.device('cuda')
+
+    log_path = f'{args.model_name}_train_stats.log'
     model.train()
     batch_time = AverageMeter('Time', ':6.3f')
     data_time = AverageMeter('Data', ':6.3f')
     losses = AverageMeter('Loss', ':.4e')
-    top1 = AverageMeter('Acc@1', ':6.2f')
-    top5 = AverageMeter('Acc@5', ':6.2f')
 
     end = time.time()
-
     progress = ProgressMeter(len(dataloaders['train']),
-                             [batch_time, data_time, losses, top1, top5],
-                             prefix="Epoch: [{}]".format(epoch))
-    model.train()  # Set model to training mode
+                             [batch_time, data_time, losses],
+                             prefix='Epoch: [{}]'.format(epoch))
 
-    # Iterate over data.
+    amp_enabled = getattr(args, 'amp', False)
+
     for idx, (images, labels) in enumerate(dataloaders['train']):
         data_time.update(time.time() - end)
+
         labels = labels.squeeze()
         images = torch.cat([images[0].squeeze(), images[1].squeeze()], dim=0)
-        images = images.cuda(non_blocking=True)
-        labels = labels.squeeze().cuda(non_blocking=True)
-        bsz = labels.shape[0]  # batch size
+        images = images.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
+        bsz = labels.shape[0]
 
-        # forward
-        amp_enabled = getattr(args, 'amp', False)
         with torch.cuda.amp.autocast(enabled=amp_enabled):
-            features = model(images)
+            features = model(images)                                      # [2*bsz, D]
             f1, f2 = torch.split(features, [bsz, bsz], dim=0)
-            features = torch.cat([f1.unsqueeze(1), f2.unsqueeze(1)], dim=1)
-            loss = criterion(features, labels)
+            features = torch.cat([f1.unsqueeze(1), f2.unsqueeze(1)], dim=1)  # [bsz, 2, D]
+
+            # ----------------------------------------------------------------
+            # Cross-GPU aggregation: gather features and labels from all ranks
+            # before computing the loss so that each GPU's loss sees the full
+            # effective batch (world_size × local_bsz samples).
+            # Gradient flows back only through the local rank's slice.
+            # ----------------------------------------------------------------
+            if world_size > 1:
+                all_features = concat_all_gather(features, rank, world_size, device)
+                all_labels = concat_all_gather(labels, rank, world_size, device)
+            else:
+                all_features = features
+                all_labels = labels
+
+            loss = criterion(all_features, all_labels)
+
         losses.update(loss.item(), bsz)
 
         optimizer.zero_grad()
@@ -325,15 +383,14 @@ def train(dataloaders, model, criterion, optimizer, scheduler, epoch, args, scal
             loss.backward()
             optimizer.step()
 
-        # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
         sys.stdout.flush()
-        if idx % args.print_freq == 0:
-            log_line = progress.display(idx)
 
-            with open(log_path, "a") as f:
-                f.write(log_line + "\n")
+        if is_main and idx % args.print_freq == 0:
+            log_line = progress.display(idx)
+            with open(log_path, 'a') as f:
+                f.write(log_line + '\n')
 
 
 def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
@@ -342,7 +399,7 @@ def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
         shutil.copyfile(filename, 'model_best.pth.tar')
 
 
-def load_imagenet_hierarchical(root_dir, hierarchy_file, opt):
+def load_imagenet_hierarchical(root_dir, hierarchy_file, opt, rank=0, world_size=1):
     train_transform = transforms.Compose([
         transforms.RandomResizedCrop(size=opt.input_size, scale=(0.2, 1.)),
         transforms.RandomHorizontalFlip(),
@@ -369,6 +426,7 @@ def load_imagenet_hierarchical(root_dir, hierarchy_file, opt):
         index_cache=index_cache,
     )
 
+    # Eval loaders are non-distributed: rank 0 uses the full dataset for KNN eval.
     memory_dataset = ImagenetHierarchihcalDatasetEval(
         hierarchy_file=hierarchy_file,
         root_dir=root_dir,
@@ -376,7 +434,6 @@ def load_imagenet_hierarchical(root_dir, hierarchy_file, opt):
         index_cache=index_cache,
     )
 
-    # Use val split for test evaluation; fall back to train if no val available
     val_root = os.path.join(root_dir, 'val')
     if os.path.isdir(val_root):
         test_dataset = ImagenetHierarchihcalDatasetEval(
@@ -388,62 +445,62 @@ def load_imagenet_hierarchical(root_dir, hierarchy_file, opt):
     else:
         test_dataset = memory_dataset
 
-    print('LENGTH TRAIN', len(train_dataset))
+    if rank == 0:
+        print('LENGTH TRAIN', len(train_dataset))
+        print(opt.workers, 'workers')
 
+    # Hierarchical sampler splits the dataset across GPUs via rank/num_replicas
     train_sampler = HierarchicalBatchSampler(
         batch_size=opt.batch_size,
         drop_last=False,
         dataset=train_dataset,
+        num_replicas=world_size,
+        rank=rank,
     )
     sampler = {'train': train_sampler}
 
-    print(opt.workers, "workers")
     dataloaders_dict = {}
     dataloaders_dict['train'] = torch.utils.data.DataLoader(
         train_dataset, sampler=train_sampler,
         num_workers=opt.workers, batch_size=1,
         pin_memory=True,
     )
+    # Eval loaders: not distributed — rank 0 sees the full dataset
     dataloaders_dict['memory'] = torch.utils.data.DataLoader(
         memory_dataset, batch_size=opt.batch_size,
-        shuffle=False, num_workers=16,
+        shuffle=False, num_workers=opt.workers,
     )
     dataloaders_dict['test'] = torch.utils.data.DataLoader(
         test_dataset, batch_size=opt.batch_size,
-        shuffle=False, num_workers=16,
+        shuffle=False, num_workers=opt.workers,
     )
 
     return dataloaders_dict, sampler
 
 
-def setup_optimizer(model_ft, lr, momentum, weight_decay, feature_extract):
-    params_to_update = model_ft.parameters()
-    print("Params to learn:")
+def setup_optimizer(model_ft, lr, momentum, weight_decay, feature_extract, is_main=True):
     if feature_extract:
-        params_to_update = []
-        for name, param in model_ft.named_parameters():
-            if param.requires_grad == True:
-                params_to_update.append(param)
-                print("\t", name)
+        params_to_update = [p for p in model_ft.parameters() if p.requires_grad]
+        if is_main:
+            print('Params to learn:')
+            for name, param in model_ft.named_parameters():
+                if param.requires_grad:
+                    print('\t', name)
     else:
-        for name, param in model_ft.named_parameters():
-            if param.requires_grad == True:
-                print("\t", name)
+        params_to_update = list(model_ft.parameters())
+        if is_main:
+            print('Params to learn: all')
 
-    # Observe that all parameters are being optimized
-    optimizer_ft = torch.optim.SGD(params_to_update, lr=lr, momentum=momentum, weight_decay=weight_decay)
-    return optimizer_ft
+    return torch.optim.SGD(params_to_update, lr=lr, momentum=momentum, weight_decay=weight_decay)
 
 
 def set_parameter_requires_grad(model, feature_extracting):
-    if hasattr(model, "module"):
+    if hasattr(model, 'module'):
         model = model.module
     if feature_extracting:
         is_vit = isinstance(model, resnet_modified.MyViT)
         for name, param in model.named_parameters():
             if is_vit:
-                # Unfreeze last 3 transformer blocks (equiv. to layer3+layer4 in ResNet50),
-                # the final layernorm, and the projection head
                 if any(name.startswith(f'encoder.vit.encoder.layer.{i}') for i in [9, 10, 11]):
                     param.requires_grad = True
                 elif name.startswith('encoder.vit.layernorm'):
@@ -489,7 +546,7 @@ class AverageMeter(object):
 
 
 class ProgressMeter(object):
-    def __init__(self, num_batches, meters, prefix=""):
+    def __init__(self, num_batches, meters, prefix=''):
         self.batch_fmtstr = self._get_batch_fmtstr(num_batches)
         self.meters = meters
         self.prefix = prefix
@@ -497,10 +554,9 @@ class ProgressMeter(object):
     def display(self, batch):
         entries = [self.prefix + self.batch_fmtstr.format(batch)]
         entries += [str(meter) for meter in self.meters]
-        log_line = '\t'.join(entries)  # exact console format
-
-        print(log_line)  # still print to terminal
-        return log_line  # return to caller for logging
+        log_line = '\t'.join(entries)
+        print(log_line)
+        return log_line
 
     def _get_batch_fmtstr(self, num_batches):
         num_digits = len(str(num_batches // 1))
@@ -519,19 +575,21 @@ def test(net, memory_data_loader, test_data_loader, args, epoch, device):
             label_bank.append(labels[1])  # use fine (ImageNet class) label
         # [D, N]
         feature_bank = torch.cat(feature_bank, dim=0).t().contiguous()
-        feature_labels = torch.cat(label_bank, dim=0)
-        feature_labels = feature_labels.to(device)
-        # loop test data to predict the label by weighted knn search
+        feature_labels = torch.cat(label_bank, dim=0).to(device)
+
+        # Normalize the feature bank once before the test loop
+        feature_bank = torch.nn.functional.normalize(feature_bank, dim=0)  # [D, N]
+
         test_bar = tqdm(test_data_loader)
         for data, target in test_bar:
-            data, target = data.to(device, non_blocking=True), target[1].to(device, non_blocking=True)
+            data = data.to(device, non_blocking=True)
+            target = target[1].to(device, non_blocking=True)
             feature = net.encoder(data)
 
             total_num += data.size(0)
 
-            # L2-normalize along feature dimension
+            # L2-normalize query features
             feature = torch.nn.functional.normalize(feature, dim=1)  # [B, D]
-            feature_bank = torch.nn.functional.normalize(feature_bank, dim=0)  # [D, K]
 
             # compute cos similarity between each feature vector and feature bank ---> [B, N]
             sim_matrix = torch.mm(feature, feature_bank)
@@ -539,22 +597,30 @@ def test(net, memory_data_loader, test_data_loader, args, epoch, device):
             sim_weight, sim_indices = sim_matrix.topk(k=args.k, dim=-1)
             sim_weight = (sim_weight / args.temp).exp()
             # [B, K]
-            sim_labels = torch.gather(feature_labels.expand(data.size(0), -1), dim=-1, index=sim_indices)
+            sim_labels = torch.gather(
+                feature_labels.expand(data.size(0), -1), dim=-1, index=sim_indices)
 
             # counts for each class
-            one_hot_label = torch.zeros(data.size(0) * args.k, args.num_classes, device=sim_labels.device)
+            one_hot_label = torch.zeros(
+                data.size(0) * args.k, args.num_classes, device=sim_labels.device)
             # [B*K, C]
-            one_hot_label = one_hot_label.scatter(dim=-1, index=sim_labels.view(-1, 1), value=1.0)
+            one_hot_label = one_hot_label.scatter(
+                dim=-1, index=sim_labels.view(-1, 1), value=1.0)
             # weighted score ---> [B, C]
             pred_scores = torch.sum(
-                one_hot_label.view(data.size(0), -1, args.num_classes) * sim_weight.unsqueeze(dim=-1), dim=1)
+                one_hot_label.view(data.size(0), -1, args.num_classes) * sim_weight.unsqueeze(dim=-1),
+                dim=1)
 
             pred_labels = pred_scores.argsort(dim=-1, descending=True)
-            total_top1 += torch.sum((pred_labels[:, :1] == target.unsqueeze(dim=-1)).any(dim=-1).float()).item()
-            total_top5 += torch.sum((pred_labels[:, :5] == target.unsqueeze(dim=-1)).any(dim=-1).float()).item()
-            test_bar.set_description('Test Epoch: [{}/{}] Acc@1:{:.5f}% Acc@5:{:.5f}%'
-                                     .format(epoch, args.epochs, total_top1 / total_num * 100,
-                                             total_top5 / total_num * 100))
+            total_top1 += torch.sum(
+                (pred_labels[:, :1] == target.unsqueeze(dim=-1)).any(dim=-1).float()).item()
+            total_top5 += torch.sum(
+                (pred_labels[:, :5] == target.unsqueeze(dim=-1)).any(dim=-1).float()).item()
+            test_bar.set_description(
+                'Test Epoch: [{}/{}] Acc@1:{:.5f}% Acc@5:{:.5f}%'.format(
+                    epoch, args.epochs,
+                    total_top1 / total_num * 100,
+                    total_top5 / total_num * 100))
 
     return total_top1 / total_num * 100, total_top5 / total_num * 100
 
