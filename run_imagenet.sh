@@ -80,7 +80,7 @@ torchrun --nproc_per_node=${GPUS_PER_NODE} \
     --criterion hmlc \
     --loss hmce \
     --model resnet50 \
-    --workers 8 \
+    --workers 4 \
     --seed 0 \
     --tag imagenet \
     --amp \

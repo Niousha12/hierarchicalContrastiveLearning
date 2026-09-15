@@ -364,24 +364,24 @@ class HierarchicalBatchSampler(Sampler):
         print(self.total_size, self.num_replicas, self.batch_size,
               self.num_samples, len(self.dataset), self.rank)
 
-    def random_unvisited_sample(self, label, label_dict, visited, indices,
-                                remaining, num_attempt=10):
-        attempt = 0
-        while attempt < num_attempt:
+    def random_unvisited_sample(self, label, label_dict, remaining, num_attempt=10):
+        """Return a random index that is still in `remaining` (a set).
+
+        Using a set for `remaining` gives O(1) membership tests, replacing
+        the original O(N) list scan that caused OOM on large datasets.
+        """
+        for _ in range(num_attempt):
             idx = self.dataset.random_sample(label, label_dict)
-            if idx not in visited and idx in indices:
-                visited.add(idx)
+            if idx in remaining:
                 return idx
-            attempt += 1
-        idx = remaining[torch.randint(len(remaining), (1,))]
-        visited.add(idx)
-        return idx
+        # Fallback: return any unvisited index (remaining is a set, so
+        # next(iter(...)) is O(1) and avoids an O(N) list conversion).
+        return next(iter(remaining))
 
     def __iter__(self):
         g = torch.Generator()
         g.manual_seed(self.epoch)
         batch = []
-        visited = set()
         indices = torch.randperm(len(self.dataset), generator=g).tolist()
 
         if not self.drop_last:
@@ -393,23 +393,30 @@ class HierarchicalBatchSampler(Sampler):
         indices = indices[self.rank:self.total_size:self.num_replicas]
         assert len(indices) == self.num_samples
 
-        remaining = list(set(indices).difference(visited))
+        # Maintain `remaining` as a set updated incrementally (O(1) discard).
+        # The original code called list(set(indices).difference(visited)) TWICE
+        # per batch iteration — O(N) allocations × N_batches caused gradual RSS
+        # growth and eventually OOM-killed a DataLoader worker on ImageNet.
+        remaining = set(indices)
+
         while len(remaining) > self.batch_size:
-            idx = indices[torch.randint(len(indices), (1,))]
+            # Pick a random anchor; skip if already consumed by a prior triplet
+            idx = indices[torch.randint(len(indices), (1,)).item()]
+            if idx not in remaining:
+                continue
+            remaining.discard(idx)
             batch.append(idx)
-            visited.add(idx)
             super_cls, cls = self.dataset.get_label_split_by_index(idx)
             cls_index = self.random_unvisited_sample(
-                cls, self.dataset.labels[super_cls], visited, indices, remaining)
+                cls, self.dataset.labels[super_cls], remaining)
+            remaining.discard(cls_index)
             super_cls_index = self.random_unvisited_sample(
-                super_cls, self.dataset.labels, visited, indices, remaining)
+                super_cls, self.dataset.labels, remaining)
+            remaining.discard(super_cls_index)
             batch.extend([super_cls_index, cls_index])
-            visited.update([super_cls_index, cls_index])
-            remaining = list(set(indices).difference(visited))
             if len(batch) >= self.batch_size:
                 yield batch
                 batch = []
-            remaining = list(set(indices).difference(visited))
 
         if (len(remaining) > self.batch_size) and not self.drop_last:
             batch.update(list(remaining))

@@ -307,57 +307,51 @@ class HierarchicalBatchSampler(Sampler):
         print(self.total_size, self.num_replicas, self.batch_size,
               self.num_samples, len(self.dataset), self.rank)
 
-    def random_unvisited_sample(self, label, label_dict, visited, indices, remaining, num_attempt=10):
-        attempt = 0
-        while attempt < num_attempt:
+    def random_unvisited_sample(self, label, label_dict, remaining, num_attempt=10):
+        """Return a random index that is still in `remaining` (a set)."""
+        for _ in range(num_attempt):
             idx = self.dataset.random_sample(label, label_dict)
-            if idx not in visited and idx in indices:
-                visited.add(idx)
+            if idx in remaining:
                 return idx
-            attempt += 1
-        idx = remaining[torch.randint(len(remaining), (1,))]
-        visited.add(idx)
-        return idx
+        return next(iter(remaining))
 
     def __iter__(self):
         g = torch.Generator()
         g.manual_seed(self.epoch)
         batch = []
-        visited = set()
         indices = torch.randperm(len(self.dataset), generator=g).tolist()
 
         if not self.drop_last:
-            # add extra samples to make it evenly divisible
             indices += indices[:(self.total_size - len(indices))]
         else:
-            # remove tail of data to make it evenly divisible.
             indices = indices[:self.total_size]
 
         assert len(indices) == self.total_size
-
-        # subsample
         indices = indices[self.rank:self.total_size:self.num_replicas]
         assert len(indices) == self.num_samples
 
-        remaining = list(set(indices).difference(visited))
+        # Maintain `remaining` as an incrementally-updated set (O(1) discard)
+        # instead of recomputing list(set(indices).difference(visited)) each
+        # batch — the original caused OOM on large datasets.
+        remaining = set(indices)
+
         while len(remaining) > self.batch_size:
-            idx = indices[torch.randint(len(indices), (1,))]
+            idx = indices[torch.randint(len(indices), (1,)).item()]
+            if idx not in remaining:
+                continue
+            remaining.discard(idx)
             batch.append(idx)
-            visited.add(idx)
             genus_int, species_int = self.dataset.get_label_split_by_index(idx)
-            # Sample a same-species image (different index)
             species_index = self.random_unvisited_sample(
-                species_int, self.dataset.labels[genus_int], visited, indices, remaining)
-            # Sample a same-genus, different-species image
+                species_int, self.dataset.labels[genus_int], remaining)
+            remaining.discard(species_index)
             genus_index = self.random_unvisited_sample(
-                genus_int, self.dataset.labels, visited, indices, remaining)
+                genus_int, self.dataset.labels, remaining)
+            remaining.discard(genus_index)
             batch.extend([species_index, genus_index])
-            visited.update([species_index, genus_index])
-            remaining = list(set(indices).difference(visited))
             if len(batch) >= self.batch_size:
                 yield batch
                 batch = []
-            remaining = list(set(indices).difference(visited))
 
         if (len(remaining) > self.batch_size) and not self.drop_last:
             batch.update(list(remaining))
